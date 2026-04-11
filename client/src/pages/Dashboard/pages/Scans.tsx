@@ -701,14 +701,24 @@ export default function Analysis() {
         githubToken: githubToken.trim() || undefined,
       });
       setPatchDiff(data.diff ?? "");
-      if (data.results) {
-        setResults(data.results);
-        await sendRepoDetails(data.results);
-        const remaining = data.results.summary?.secretsFound ?? 0;
+      let nextResults = data.results ?? null;
+      if (push && !nextResults) {
+        logToConsole("→ Push completed. Triggering verification scan...");
+        const verifyResponse = await axiosInstance.post("/patch/verify", {
+          sessionId: patchSessionId,
+          githubToken: githubToken.trim() || undefined,
+        });
+        nextResults = verifyResponse.data?.results ?? null;
+      }
+
+      if (nextResults) {
+        setResults(nextResults);
+        await sendRepoDetails(nextResults);
+        const remaining = nextResults.summary?.secretsFound ?? 0;
         logToConsole(
           remaining === 0
-            ? "✓ Post-push rescan complete. No secrets remain in the remediation workspace."
-            : `⚠ Post-push rescan complete. ${remaining} secret${remaining === 1 ? "" : "s"} still remain.`
+            ? "✓ Post-push verification complete. No secrets remain in the pushed branch."
+            : `⚠ Post-push verification complete. ${remaining} secret${remaining === 1 ? "" : "s"} still remain in the pushed branch.`
         );
       } else {
         setResults((prev) => withRemediationMeta(prev, data.remediation));
@@ -718,7 +728,7 @@ export default function Analysis() {
       setToastMessage(
         data.commit?.pushed
           ? (() => {
-              const remaining = data.results?.summary?.secretsFound ?? null;
+              const remaining = nextResults?.summary?.secretsFound ?? null;
               if (remaining == null) return `Branch ${data.commit.branchName} pushed to GitHub.`;
               return remaining === 0
                 ? `Branch ${data.commit.branchName} pushed. Post-push scan found no remaining secrets.`
@@ -923,7 +933,7 @@ export default function Analysis() {
                 {scanMeta?.analyzer?.reviewedCount ?? 0} reviewed
               </p>
               <p className="text-xs text-slate-500 mt-2">
-                {scanMeta?.analyzer?.confirmedCount ?? 0} confirmed by analyzer before response
+                {scanMeta?.analyzer?.confirmedCount ?? 0} scored as likely secrets before response
               </p>
               <p className="text-[11px] text-slate-500 mt-2 truncate" title={scanMeta?.analyzer?.url || "https://secure-scan-ai-risk.onrender.com/analyze"}>
                 Source: {(scanMeta?.analyzer?.url || "https://secure-scan-ai-risk.onrender.com/analyze").replace(/^https?:\/\//, "")}
@@ -1481,75 +1491,98 @@ export default function Analysis() {
                         const rowKey = `p${page}-i${idx}`;
                         const expanded = openCodeRowKey === rowKey;
                         const hasSnippet = !!(r.secret.snippet && r.secret.snippet.lines?.length);
+                        const confidencePercent = r.secret.aiAnalysis?.confidence != null ? Math.round(r.secret.aiAnalysis.confidence * 100) : null;
+                        const riskPercent = r.secret.aiAnalysis?.risk_score != null ? Math.round(r.secret.aiAnalysis.risk_score * 100) : null;
+                        const aiServiceLabel =
+                          r.secret.aiAnalysis?.service && r.secret.aiAnalysis.service !== "unknown"
+                            ? r.secret.aiAnalysis.service
+                            : null;
                         return (
                           <Fragment key={rowKey}>
-                            <tr className="hover:bg-slate-800/30 transition-colors">
-                              <td className="px-4 py-3 text-xs text-slate-300 max-w-[150px] truncate" title={r.file}>{r.file.split('/').pop()}</td>
-                              <td className="px-4 py-3 font-mono text-xs text-rose-400">
-                                {revealSecrets[r.findingKey] ? r.secret.secret : mask(r.secret.secret)}
+                            <tr className="hover:bg-slate-900/40 transition-colors">
+                              <td className="px-4 py-4 max-w-[220px]" title={r.file}>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-slate-100 truncate">{r.file.split('/').pop()}</p>
+                                  <p className="text-[11px] text-slate-500 truncate mt-1">{r.file}</p>
+                                </div>
                               </td>
-                              <td className="px-4 py-3 text-xs">
-                                <div className="flex flex-col gap-1">
-                                  <span className="text-cyan-400">{r.secret.type}</span>
+                              <td className="px-4 py-4">
+                                <div className="inline-flex max-w-[220px] items-center rounded-xl border border-rose-500/15 bg-rose-500/8 px-3 py-2">
+                                  <span className="font-mono text-xs text-rose-300 truncate">
+                                    {revealSecrets[r.findingKey] ? r.secret.secret : mask(r.secret.secret)}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-4 py-4">
+                                <div className="flex flex-col gap-2">
+                                  <span className="text-sm font-semibold text-cyan-300">{r.secret.type}</span>
                                   {r.secret.aiAnalysis?.is_secret && (
-                                    <span className="inline-flex w-fit items-center gap-1 px-2 py-0.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 text-[9px] font-bold uppercase tracking-[0.18em] text-emerald-300">
-                                      AI {r.secret.aiAnalysis.service || "Verified"}
-                                    </span>
-                                  )}
-                                  {r.secret.aiAnalysis?.confidence != null && (
-                                    <span className="text-[10px] text-slate-500">
-                                      {Math.round(r.secret.aiAnalysis.confidence * 100)}% confidence
+                                    <span className="inline-flex w-fit items-center px-2.5 py-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-300">
+                                      {aiServiceLabel ? `AI ${aiServiceLabel}` : "AI Verified"}
                                     </span>
                                   )}
                                 </div>
                               </td>
-                              <td className="px-4 py-3 text-xs">
-                                {r.secret.aiAnalysis ? (
-                                  <div className="flex flex-col gap-1">
-                                    <span className="font-semibold text-emerald-300">
-                                      {Math.round((r.secret.aiAnalysis.confidence ?? 0) * 100)}%
-                                    </span>
-                                    <span className="text-[10px] text-slate-500">
-                                      Risk {Math.round((r.secret.aiAnalysis.risk_score ?? 0) * 100)}%
-                                    </span>
+                              <td className="px-4 py-4 min-w-[160px]">
+                                {confidencePercent != null ? (
+                                  <div className="space-y-2">
+                                    <div className="flex items-baseline gap-2">
+                                      <span className="text-base font-semibold text-emerald-300">{confidencePercent}%</span>
+                                      <span className="text-[11px] text-slate-500">confidence</span>
+                                    </div>
+                                    <div className="h-1.5 w-full rounded-full bg-slate-800 overflow-hidden">
+                                      <div
+                                        className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400"
+                                        style={{ width: `${confidencePercent}%` }}
+                                      />
+                                    </div>
+                                    {riskPercent != null && (
+                                      <p className="text-[11px] text-slate-500">Risk {riskPercent}%</p>
+                                    )}
                                   </div>
                                 ) : (
-                                  <span className="text-slate-500">Not scored</span>
+                                  <span className="inline-flex items-center px-2.5 py-1 rounded-full border border-slate-800 bg-slate-950/70 text-[11px] text-slate-500">
+                                    Not scored
+                                  </span>
                                 )}
                               </td>
-                              <td className="px-4 py-3 text-xs text-slate-400">#{r.secret.line}</td>
-                              <td className="px-4 py-3">
+                              <td className="px-4 py-4">
+                                <span className="inline-flex items-center rounded-full border border-slate-800 bg-slate-950/70 px-2.5 py-1 text-[11px] font-semibold text-slate-300">#{r.secret.line}</span>
+                              </td>
+                              <td className="px-4 py-4">
                                 <button
                                   type="button"
                                   disabled={!hasSnippet}
                                   onClick={() => setOpenCodeRowKey(expanded ? null : rowKey)}
-                                  className={`px-2 py-1 rounded text-[10px] font-semibold border transition-colors ${
+                                  className={`px-3 py-2 rounded-xl text-[11px] font-semibold border transition-colors ${
                                     hasSnippet
                                       ? expanded
-                                        ? "border-cyan-500 bg-cyan-500/20 text-cyan-300"
+                                        ? "border-cyan-500 bg-cyan-500/15 text-cyan-300"
                                         : "border-slate-600 bg-slate-800/80 text-slate-200 hover:border-cyan-500/50"
-                                      : "border-slate-800 text-slate-600 cursor-not-allowed opacity-60"
+                                      : "border-slate-800 bg-slate-950/50 text-slate-600 cursor-not-allowed opacity-60"
                                   }`}
                                   title={hasSnippet ? "Toggle VS Code–style code context" : "No snippet returned — restart backend after update and rescan"}
                                 >
-                                  {hasSnippet ? (expanded ? "Hide code" : "Show code") : "No preview"}
+                                  {hasSnippet ? (expanded ? "Hide Preview" : "Show Preview") : "No preview"}
                                 </button>
                               </td>
-                              <td className="px-4 py-3 flex justify-end gap-2">
+                              <td className="px-4 py-4">
+                                <div className="flex flex-wrap justify-end gap-2">
                                 <button
                                   type="button"
                                   onClick={() => handlePatchApply(r)}
                                   disabled={!canUsePatchAgent || patchBusyKey !== null}
-                                  className="px-2 py-1 rounded border border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20 text-[10px] text-cyan-300 disabled:opacity-50"
+                                  className="px-3 py-2 rounded-xl border border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20 text-[11px] font-semibold text-cyan-300 disabled:opacity-50"
                                 >
                                   {patchBusyKey === r.findingKey ? "Patching..." : "Patch"}
                                 </button>
-                                <button type="button" onClick={() => setRevealSecrets((p) => ({ ...p, [r.findingKey]: !p[r.findingKey] }))} className="px-2 py-1 rounded border border-slate-700 hover:bg-slate-800 text-[10px] text-slate-300">
+                                <button type="button" onClick={() => setRevealSecrets((p) => ({ ...p, [r.findingKey]: !p[r.findingKey] }))} className="px-3 py-2 rounded-xl border border-slate-700 hover:bg-slate-800 text-[11px] font-semibold text-slate-300">
                                   {revealSecrets[r.findingKey] ? 'Hide' : 'Reveal'}
                                 </button>
-                                <button type="button" onClick={() => setSelectedFile(r.file)} className="px-2 py-1 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 text-[10px] font-semibold">
+                                <button type="button" onClick={() => setSelectedFile(r.file)} className="px-3 py-2 rounded-xl bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 text-[11px] font-semibold">
                                   Inspect
                                 </button>
+                                </div>
                               </td>
                             </tr>
                             {expanded && (

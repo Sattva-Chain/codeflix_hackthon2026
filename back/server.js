@@ -119,8 +119,8 @@ async function analyzeCandidateWithAi(candidate) {
     if (typeof fetch === "function") {
       const response = await fetch(AI_ANALYZE_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(text),
+        headers: { "Content-Type": "text/plain" },
+        body: text,
       });
       if (!response.ok) return null;
       const data = await response.json();
@@ -133,7 +133,7 @@ async function analyzeCandidateWithAi(candidate) {
   try {
     const target = new URL(AI_ANALYZE_URL);
     const client = target.protocol === "http:" ? http : https;
-    const payload = JSON.stringify(text);
+    const payload = text;
 
     const data = await new Promise((resolve) => {
       const request = client.request(
@@ -141,7 +141,7 @@ async function analyzeCandidateWithAi(candidate) {
         {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
+            "Content-Type": "text/plain",
             "Content-Length": Buffer.byteLength(payload),
           },
         },
@@ -318,22 +318,99 @@ function pickPrimarySecret(f, needles) {
   return needles[0];
 }
 
+function titleCaseWords(value) {
+  return String(value || "")
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function inferServiceFromFinding(finding, candidate) {
+  const text = `${finding?.DetectorName || finding?.detectorName || finding?.DetectorType || finding?.detectorType || ""} ${candidate || ""}`.toLowerCase();
+  if (text.includes("openai") || /^sk-[a-z0-9]/i.test(candidate || "")) return "OpenAI";
+  if (text.includes("github") || /^(ghp_|github_pat_)/i.test(candidate || "")) return "GitHub";
+  if (text.includes("redis") || /^redis(s)?:\/\//i.test(candidate || "")) return "Redis";
+  if (text.includes("mongo") || /^mongodb(\+srv)?:\/\//i.test(candidate || "")) return "MongoDB";
+  if (text.includes("firebase") || text.includes("google")) return "Google/Firebase";
+  if (text.includes("aws") || /^akia/i.test(candidate || "")) return "AWS";
+  if (text.includes("slack") || /^xox[baprs]-/i.test(candidate || "")) return "Slack";
+  if (text.includes("stripe") || /^sk_(live|test)_/i.test(candidate || "")) return "Stripe";
+  const detectorLabel =
+    finding?.DetectorName || finding?.detectorName || finding?.DetectorType || finding?.detectorType || finding?.Reason || finding?.reason || "";
+  return titleCaseWords(detectorLabel) || "Unknown";
+}
+
+function buildBackendConfidenceAnalysis(finding, candidate) {
+  const text = String(candidate || "").trim();
+  if (!text || text === "Hidden") return null;
+
+  const entropyOnly = detectorIsEntropyOnly(finding);
+  const service = inferServiceFromFinding(finding, text);
+  let confidence = entropyOnly ? 0.62 : 0.9;
+  let risk = entropyOnly ? 0.68 : 0.93;
+  let reason = entropyOnly
+    ? "Backend heuristic scored this high-entropy string from detector metadata and secret shape."
+    : "Backend heuristic scored this detector hit as a likely real secret.";
+
+  if (/^(redis(s)?:\/\/|mongodb(\+srv)?:\/\/)/i.test(text)) {
+    confidence += 0.16;
+    risk += 0.18;
+    reason = "Backend detected a credential-bearing connection string.";
+  } else if (/^(sk-[a-z0-9]|ghp_|github_pat_|xox[baprs]-|akia)/i.test(text)) {
+    confidence += 0.18;
+    risk += 0.16;
+    reason = "Backend matched a strong provider-specific secret pattern.";
+  } else if (text.length >= 24) {
+    confidence += 0.08;
+    risk += 0.06;
+  }
+
+  const lower = text.toLowerCase();
+  if (/(example|sample|dummy|placeholder|test|localhost)/.test(lower)) {
+    confidence -= 0.28;
+    risk -= 0.32;
+    reason = "Backend found placeholder-style text, so the score was reduced.";
+  }
+
+  confidence = Math.max(0.15, Math.min(0.99, confidence));
+  risk = Math.max(0.1, Math.min(0.99, risk));
+
+  return {
+    ai_analysis: {
+      is_secret: confidence >= 0.55,
+      risk_score: Number(risk.toFixed(2)),
+      confidence: Number(confidence.toFixed(2)),
+      reason,
+      service,
+    },
+    source: "backend-heuristic",
+    candidate: text,
+  };
+}
+
 async function enrichFindingsWithAi(findings = []) {
   if (!Array.isArray(findings) || !findings.length) {
-    return { findings, stats: { reviewed: 0, confirmed: 0 } };
+    return { findings, stats: { reviewed: 0, confirmed: 0, rejected: 0 } };
   }
 
   const enriched = [];
   let reviewed = 0;
   let confirmed = 0;
+  let rejected = 0;
 
   for (const finding of findings) {
     const needles = collectSecretNeedles(finding);
     const candidate = pickPrimarySecret(finding, needles);
-    const ai = await analyzeCandidateWithAi(candidate);
+    const ai = (await analyzeCandidateWithAi(candidate)) || buildBackendConfidenceAnalysis(finding, candidate);
     if (ai) {
       reviewed++;
-      if (ai.ai_analysis?.is_secret) confirmed++;
+      if (ai.ai_analysis?.is_secret) {
+        confirmed++;
+      } else {
+        rejected++;
+        continue;
+      }
       enriched.push({
         ...finding,
         ai_analysis: ai.ai_analysis || null,
@@ -345,7 +422,7 @@ async function enrichFindingsWithAi(findings = []) {
     enriched.push(finding);
   }
 
-  return { findings: enriched, stats: { reviewed, confirmed } };
+  return { findings: enriched, stats: { reviewed, confirmed, rejected } };
 }
 
 function rowNeedleList(row) {
@@ -1035,6 +1112,30 @@ async function buildFreshRemoteVerificationScan({ repoUrl, branchName, githubTok
   }
 }
 
+async function verifySessionAfterPush(session, githubToken) {
+  const formatted =
+    session.repoUrl && session.lastBranchName
+      ? await buildFreshRemoteVerificationScan({
+          repoUrl: session.repoUrl,
+          branchName: session.lastBranchName,
+          githubToken,
+        })
+      : await buildScanResponse(session.repoPath, session.sourceType === "git", {
+          mode: "post-push-verification",
+          sourceKind: session.sourceType,
+          repoUrl: session.repoUrl || null,
+          verification: {
+            performed: true,
+            scannedAt: new Date().toISOString(),
+            branch: session.lastBranchName || null,
+            source: "workspace-fallback",
+          },
+        });
+
+  updateSessionResults(session.sessionId, formatted);
+  return withRemediationMeta(formatted, session);
+}
+
 function sanitizeErrorMessage(value) {
   if (value == null) return "Unknown error";
   return String(value)
@@ -1217,32 +1318,28 @@ app.post("/patch/commit", async (req, res) => {
     let results = null;
 
     if (req.body.push) {
-      const formatted =
-        session.repoUrl && session.lastBranchName
-          ? await buildFreshRemoteVerificationScan({
-              repoUrl: session.repoUrl,
-              branchName: session.lastBranchName,
-              githubToken: req.body.githubToken,
-            })
-          : await buildScanResponse(session.repoPath, session.sourceType === "git", {
-              mode: "post-push-verification",
-              sourceKind: session.sourceType,
-              repoUrl: session.repoUrl || null,
-              verification: {
-                performed: true,
-                scannedAt: new Date().toISOString(),
-                branch: session.lastBranchName || null,
-                source: "workspace-fallback",
-              },
-            });
-      updateSessionResults(session.sessionId, formatted);
-      results = await withRemediationMeta(formatted, session);
+      results = await verifySessionAfterPush(session, req.body.githubToken);
     }
 
     return res.json({
       success: true,
       commit,
       diff,
+      remediation: await buildSessionMeta(session),
+      results,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: sanitizeErrorMessage(err.message) });
+  }
+});
+
+app.post("/patch/verify", async (req, res) => {
+  try {
+    const session = getSession(req.body.sessionId);
+    if (!session) return res.status(404).json({ success: false, message: "Patch session not found or expired." });
+    const results = await verifySessionAfterPush(session, req.body.githubToken);
+    return res.json({
+      success: true,
       remediation: await buildSessionMeta(session),
       results,
     });
