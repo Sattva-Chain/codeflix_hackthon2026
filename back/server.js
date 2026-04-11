@@ -11,6 +11,17 @@ const mongoose = require("mongoose");
 const router = require("./routes/user");
 const { default: user } = require("./models/user");
 const { default: comp } = require("./models/company");
+const {
+	createSession,
+	getSession,
+	updateSessionResults,
+	sessionMeta,
+	previewPatches,
+	applyPatches,
+	getGitDiff,
+	commitSession,
+	rollbackSession,
+} = require("./services/remediation");
 
 const execFileAsync = util.promisify(execFile);
 const app = express();
@@ -943,6 +954,23 @@ async function formatResults(
 	};
 }
 
+function withRemediationMeta(formatted, session) {
+	return {
+		...formatted,
+		remediation: sessionMeta(session),
+	};
+}
+
+function sanitizeErrorMessage(value) {
+	if (value == null) return "Unknown error";
+	return String(value)
+		.replace(
+			/https:\/\/x-access-token:[^@]+@github\.com\//gi,
+			"https://x-access-token:[REDACTED]@github.com/",
+		)
+		.replace(/github_pat_[A-Za-z0-9_]+/g, "github_pat_[REDACTED]");
+}
+
 // ✅ Repo URL Scan
 app.post("/scan-url", async (req, res) => {
 	const repoURL = (req.body.url || "").trim();
@@ -1010,6 +1038,232 @@ app.post("/scan-zip", upload.single("zipfile"), async (req, res) => {
 		try {
 			fs.rmSync(extractPath, { recursive: true, force: true });
 		} catch {}
+	}
+});
+
+app.post("/scan-url-remediation", async (req, res) => {
+	const repoURL = (req.body.url || "").trim();
+	if (!repoURL)
+		return res.status(400).json({ error: true, message: "URL required" });
+
+	const clonePath = path.join(tempDir, `${Date.now()}-repo-remediate`);
+
+	try {
+		await execFileAsync("git", ["clone", "--depth", "1", repoURL, clonePath]);
+
+		let findings = await runTrufflehog(clonePath);
+		findings = findings.filter((f) => {
+			const file = getFindingFileKey(f);
+			return !ignorePatterns.some((pattern) => file.includes(pattern));
+		});
+		findings = filterEntropyFalsePositives(findings, clonePath);
+
+		const formatted = await formatResults(findings, clonePath, true);
+		const session = createSession({
+			repoPath: clonePath,
+			sourceType: "git",
+			repoUrl: repoURL,
+			results: formatted,
+		});
+		return res.json(withRemediationMeta(formatted, session));
+	} catch (err) {
+		try {
+			fs.rmSync(clonePath, { recursive: true, force: true });
+		} catch {}
+		return res.status(500).json({ error: true, message: err.message });
+	}
+});
+
+app.post(
+	"/scan-zip-remediation",
+	upload.single("zipfile"),
+	async (req, res) => {
+		if (!req.file)
+			return res
+				.status(400)
+				.json({ error: true, message: "ZIP file required" });
+
+		const zipPath = req.file.path;
+		const extractPath = path.join(tempDir, `${Date.now()}-zip-remediate`);
+
+		try {
+			fs.mkdirSync(extractPath, { recursive: true });
+			new AdmZip(zipPath).extractAllTo(extractPath);
+
+			let findings = await runTrufflehog(extractPath);
+			findings = findings.filter((f) => {
+				const file = getFindingFileKey(f);
+				return !ignorePatterns.some((pattern) => file.includes(pattern));
+			});
+			findings = filterEntropyFalsePositives(findings, extractPath);
+
+			const formatted = await formatResults(findings, extractPath, false);
+			const session = createSession({
+				repoPath: extractPath,
+				sourceType: "zip",
+				repoUrl: null,
+				results: formatted,
+			});
+			return res.json(withRemediationMeta(formatted, session));
+		} catch (err) {
+			try {
+				fs.rmSync(extractPath, { recursive: true, force: true });
+			} catch {}
+			return res.status(500).json({ error: true, message: err.message });
+		} finally {
+			try {
+				fs.unlinkSync(zipPath);
+			} catch {}
+		}
+	},
+);
+
+app.post("/patch/preview", async (req, res) => {
+	try {
+		const session = getSession(req.body.sessionId);
+		if (!session)
+			return res
+				.status(404)
+				.json({
+					success: false,
+					message: "Patch session not found or expired.",
+				});
+		const previews = previewPatches(session, req.body);
+		return res.json({
+			success: true,
+			previews,
+			remediation: sessionMeta(session),
+		});
+	} catch (err) {
+		return res
+			.status(500)
+			.json({ success: false, message: sanitizeErrorMessage(err.message) });
+	}
+});
+
+app.post("/patch/apply", async (req, res) => {
+	try {
+		const session = getSession(req.body.sessionId);
+		if (!session)
+			return res
+				.status(404)
+				.json({
+					success: false,
+					message: "Patch session not found or expired.",
+				});
+
+		const applyResult = applyPatches(session, req.body);
+		let findings = await runTrufflehog(session.repoPath);
+		findings = findings.filter((f) => {
+			const file = getFindingFileKey(f);
+			return !ignorePatterns.some((pattern) => file.includes(pattern));
+		});
+		findings = filterEntropyFalsePositives(findings, session.repoPath);
+
+		const formatted = await formatResults(
+			findings,
+			session.repoPath,
+			session.sourceType === "git",
+		);
+		updateSessionResults(session.sessionId, formatted);
+		const diff = await getGitDiff(session);
+
+		return res.json({
+			success: true,
+			previews: applyResult.previews,
+			changedFiles: applyResult.changedFiles,
+			diff,
+			results: withRemediationMeta(formatted, session),
+		});
+	} catch (err) {
+		return res
+			.status(500)
+			.json({ success: false, message: sanitizeErrorMessage(err.message) });
+	}
+});
+
+app.post("/patch/diff", async (req, res) => {
+	try {
+		const session = getSession(req.body.sessionId);
+		if (!session)
+			return res
+				.status(404)
+				.json({
+					success: false,
+					message: "Patch session not found or expired.",
+				});
+		const diff = await getGitDiff(session);
+		return res.json({ success: true, diff, remediation: sessionMeta(session) });
+	} catch (err) {
+		return res
+			.status(500)
+			.json({ success: false, message: sanitizeErrorMessage(err.message) });
+	}
+});
+
+app.post("/patch/commit", async (req, res) => {
+	try {
+		const session = getSession(req.body.sessionId);
+		console.log(session);
+		if (!session)
+			return res
+				.status(404)
+				.json({
+					success: false,
+					message: "Patch session not found or expired.",
+				});
+		const commit = await commitSession(session, req.body);
+		const diff = await getGitDiff(session);
+		return res.json({
+			success: true,
+			commit,
+			diff,
+			remediation: sessionMeta(session),
+		});
+	} catch (err) {
+		return res
+			.status(500)
+			.json({ success: false, message: sanitizeErrorMessage(err.message) });
+	}
+});
+
+app.post("/patch/rollback", async (req, res) => {
+	try {
+		const session = getSession(req.body.sessionId);
+		if (!session)
+			return res
+				.status(404)
+				.json({
+					success: false,
+					message: "Patch session not found or expired.",
+				});
+
+		const rollback = await rollbackSession(session, req.body);
+		let findings = await runTrufflehog(session.repoPath);
+		findings = findings.filter((f) => {
+			const file = getFindingFileKey(f);
+			return !ignorePatterns.some((pattern) => file.includes(pattern));
+		});
+		findings = filterEntropyFalsePositives(findings, session.repoPath);
+
+		const formatted = await formatResults(
+			findings,
+			session.repoPath,
+			session.sourceType === "git",
+		);
+		updateSessionResults(session.sessionId, formatted);
+		const diff = await getGitDiff(session);
+
+		return res.json({
+			success: true,
+			rollback,
+			diff,
+			results: withRemediationMeta(formatted, session),
+		});
+	} catch (err) {
+		return res
+			.status(500)
+			.json({ success: false, message: sanitizeErrorMessage(err.message) });
 	}
 });
 
