@@ -39,6 +39,7 @@ const {
 	previewPatches,
 	applyPatches,
 	getGitDiff,
+	buildSessionMeta,
 	commitSession,
 	rollbackSession,
 } = require("./services/remediation");
@@ -1006,10 +1007,10 @@ async function buildCanonicalFindings(findings = [], repoPath = null, isGitRepo 
 	return dedupeCanonicalFindings(canonical);
 }
 
-function withRemediationMeta(formatted, session) {
+async function withRemediationMeta(formatted, session) {
 	return {
 		...formatted,
-		remediation: sessionMeta(session),
+		remediation: await buildSessionMeta(session),
 	};
 }
 
@@ -1156,7 +1157,10 @@ app.post("/scan-url-remediation", async (req, res) => {
 			results: formatted,
 		});
 		return res.json(
-			withDegradedWarnings(withRemediationMeta(formatted, session), warnings),
+			withDegradedWarnings(
+				await withRemediationMeta(formatted, session),
+				warnings,
+			),
 		);
 	} catch (err) {
 		cleanupPath(clonePath);
@@ -1189,7 +1193,10 @@ app.post(
 				results: formatted,
 			});
 			return res.json(
-				withDegradedWarnings(withRemediationMeta(formatted, session), warnings),
+				withDegradedWarnings(
+					await withRemediationMeta(formatted, session),
+					warnings,
+				),
 			);
 		} catch (err) {
 			cleanupPath(extractPath);
@@ -1252,7 +1259,7 @@ app.post("/finding-ignore", async (req, res) => {
 				created: writeResult.created,
 			},
 			results: withDegradedWarnings(
-				withRemediationMeta(formatted, session),
+				await withRemediationMeta(formatted, session),
 				warnings,
 			),
 		});
@@ -1278,7 +1285,7 @@ app.post("/patch/preview", async (req, res) => {
 		return res.json({
 			success: true,
 			previews,
-			remediation: sessionMeta(session),
+			remediation: await buildSessionMeta(session),
 		});
 	} catch (err) {
 		return res
@@ -1312,7 +1319,7 @@ app.post("/patch/apply", async (req, res) => {
 			changedFiles: applyResult.changedFiles,
 			diff,
 			results: withDegradedWarnings(
-				withRemediationMeta(formatted, session),
+				await withRemediationMeta(formatted, session),
 				warnings,
 			),
 		});
@@ -1334,7 +1341,11 @@ app.post("/patch/diff", async (req, res) => {
 					message: "Patch session not found or expired.",
 				});
 		const diff = await getGitDiff(session);
-		return res.json({ success: true, diff, remediation: sessionMeta(session) });
+		return res.json({
+			success: true,
+			diff,
+			remediation: await buildSessionMeta(session),
+		});
 	} catch (err) {
 		return res
 			.status(500)
@@ -1359,7 +1370,7 @@ app.post("/patch/commit", async (req, res) => {
 			success: true,
 			commit,
 			diff,
-			remediation: sessionMeta(session),
+			remediation: await buildSessionMeta(session),
 		});
 	} catch (err) {
 		return res
@@ -1392,7 +1403,7 @@ app.post("/patch/rollback", async (req, res) => {
 			rollback,
 			diff,
 			results: withDegradedWarnings(
-				withRemediationMeta(formatted, session),
+				await withRemediationMeta(formatted, session),
 				warnings,
 			),
 		});

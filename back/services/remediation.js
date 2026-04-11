@@ -46,6 +46,10 @@ function createSession({ repoPath, sourceType, repoUrl = null, branch = null, re
     lastCommitSha: null,
     lastBranchName: null,
     lastAppliedPatches: [],
+    lastPreviewCount: 0,
+    lastReadyPreviewCount: 0,
+    lastAppliedCount: 0,
+    lastOperation: "scan",
   };
   sessions.set(sessionId, session);
   return session;
@@ -90,6 +94,60 @@ function sessionMeta(session) {
     repoUrl: session.repoUrl || null,
     lastCommitSha: session.lastCommitSha || null,
     lastBranchName: session.lastBranchName || null,
+    lastPreviewCount: session.lastPreviewCount || 0,
+    lastReadyPreviewCount: session.lastReadyPreviewCount || 0,
+    lastAppliedCount: session.lastAppliedCount || 0,
+    lastOperation: session.lastOperation || "scan",
+  };
+}
+
+async function getWorkspaceStatus(session) {
+  if (session.sourceType !== "git") {
+    return {
+      currentBranch: null,
+      pendingChanges: false,
+      changedFiles: [],
+      changedFilesCount: 0,
+      canCommitNow: false,
+    };
+  }
+
+  try {
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain", "--branch"], {
+      cwd: session.repoPath,
+      maxBuffer: 1024 * 1024,
+    });
+    const lines = String(stdout || "").split(/\r?\n/).filter(Boolean);
+    const branchLine = lines.find((line) => line.startsWith("##")) || "";
+    const currentBranch = branchLine.replace(/^##\s*/, "").split("...")[0] || session.lastBranchName || null;
+    const changedLines = lines.filter((line) => !line.startsWith("##"));
+    const changedFiles = changedLines
+      .map((line) => line.slice(3).trim())
+      .filter(Boolean)
+      .map((file) => file.replace(/\\/g, "/"));
+
+    return {
+      currentBranch,
+      pendingChanges: changedFiles.length > 0,
+      changedFiles,
+      changedFilesCount: changedFiles.length,
+      canCommitNow: changedFiles.length > 0,
+    };
+  } catch {
+    return {
+      currentBranch: session.lastBranchName || null,
+      pendingChanges: false,
+      changedFiles: [],
+      changedFilesCount: 0,
+      canCommitNow: false,
+    };
+  }
+}
+
+async function buildSessionMeta(session) {
+  return {
+    ...sessionMeta(session),
+    ...(await getWorkspaceStatus(session)),
   };
 }
 
@@ -366,6 +424,9 @@ function previewPatches(session, payload = {}) {
   const findings = matchTargetFindings(session, payload);
   const previews = findings.map((finding) => previewPatchForFinding(session.repoPath, finding));
   session.lastAppliedPatches = previews;
+  session.lastPreviewCount = previews.length;
+  session.lastReadyPreviewCount = previews.filter((preview) => preview.status === "ready").length;
+  session.lastOperation = "preview";
   touchSession(session);
   return previews;
 }
@@ -457,6 +518,8 @@ function applyPatches(session, payload = {}) {
   ensureGitIgnore(session.repoPath);
 
   session.lastAppliedPatches = previews;
+  session.lastAppliedCount = ready.length;
+  session.lastOperation = "apply";
   touchSession(session);
   return { previews, changedFiles: Array.from(changedFiles), envNames };
 }
@@ -517,6 +580,32 @@ function sanitizeSensitiveText(value) {
     .replace(/github_pat_[A-Za-z0-9_]+/g, "github_pat_[REDACTED]");
 }
 
+function extractGithubRepoSlug(remoteUrl) {
+  const value = String(remoteUrl || "").trim();
+  const sshMatch = value.match(/^git@github\.com:(.+?)(?:\.git)?$/i);
+  if (sshMatch) return sshMatch[1];
+  const httpsMatch = value.match(/^https:\/\/github\.com\/(.+?)(?:\.git)?$/i);
+  if (httpsMatch) return httpsMatch[1];
+  return null;
+}
+
+function buildFriendlyPushError(remoteUrl, stderrText) {
+  const stderr = sanitizeSensitiveText(stderrText || "");
+  const repoSlug = extractGithubRepoSlug(remoteUrl);
+  const denied = stderr.match(/Permission to\s+([^\s]+)\s+denied/i);
+  const repoName = denied?.[1] || repoSlug || "this repository";
+
+  if (/403|Permission to .* denied/i.test(stderr)) {
+    return [
+      `GitHub denied push to ${repoName} (403).`,
+      "Use a fine-grained token for the same GitHub owner as the repo, select this repository, and grant `Contents: Read and write`.",
+      "If the repository belongs to an organization, the token may also need org approval before it can push.",
+    ].join(" ");
+  }
+
+  return stderr || "GitHub rejected the push.";
+}
+
 async function commitSession(session, payload = {}) {
   if (session.sourceType !== "git") {
     throw new Error("Commit and push are only available for Git repository scans.");
@@ -539,6 +628,7 @@ async function commitSession(session, payload = {}) {
   const commitSha = String(shaStdout || "").trim();
   session.lastCommitSha = commitSha || null;
   session.lastBranchName = branchName;
+  session.lastOperation = payload.push ? "push" : "commit";
   touchSession(session);
 
   let pushed = false;
@@ -557,10 +647,8 @@ async function commitSession(session, payload = {}) {
         maxBuffer: 1024 * 1024 * 10,
       });
     } catch (error) {
-      const stderr = sanitizeSensitiveText(error?.stderr || "");
-      const message = sanitizeSensitiveText(error?.message || "");
-      const details = stderr || message || "GitHub rejected the push.";
-      throw new Error(`GitHub push failed. ${details}`);
+      const details = buildFriendlyPushError(remoteStdout, error?.stderr || error?.message || "");
+      throw new Error(details);
     }
     pushed = true;
   }
@@ -589,6 +677,7 @@ async function rollbackSession(session, payload = {}) {
   const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: session.repoPath });
   const revertSha = String(stdout || "").trim();
   session.lastCommitSha = null;
+  session.lastOperation = "rollback";
   touchSession(session);
   return { revertedCommitSha: targetSha, revertSha };
 }
@@ -602,6 +691,7 @@ module.exports = {
   previewPatches,
   applyPatches,
   getGitDiff,
+  buildSessionMeta,
   commitSession,
   rollbackSession,
 };
