@@ -62,6 +62,13 @@ type Secret = {
 	ignoreScope?: string | null;
 	locationIndex?: number;
 	snippet?: CodeSnippet | null;
+	git?: {
+		commit?: string | null;
+		branch?: string | null;
+		ageDays?: number | null;
+		firstSeenDate?: string | null;
+		note?: string | null;
+	} | null;
 };
 
 type RemediationMeta = {
@@ -89,7 +96,11 @@ type PatchPreview = {
 };
 
 export type ScanResults = {
-	summary?: { secretsFound: number; filesWithSecrets: number };
+	summary?: {
+		secretsFound: number;
+		filesWithSecrets: number;
+		occurrencesFound?: number;
+	};
 	vulnerabilities?: Record<string, Secret[]>;
 	error?: boolean;
 	code?: string;
@@ -185,6 +196,42 @@ const mask = (s: string) => {
 	if (s.length <= 10) return s.replace(/.(?=.{2})/g, "*");
 	return s.slice(0, 4) + "..." + s.slice(-4);
 };
+
+const SEVERITY_STYLES: Record<string, string> = {
+	critical: "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-300",
+	high: "border-rose-500/30 bg-rose-500/10 text-rose-300",
+	medium: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+	low: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+};
+
+const normalizeSeverity = (severity?: string | null) => {
+	const value = String(severity || "").trim().toLowerCase();
+	return value || "low";
+};
+
+const formatConfidence = (confidence?: number | null) => {
+	if (confidence === undefined || confidence === null) return "N/A";
+	if (confidence <= 1) return `${Math.round(confidence * 100)}%`;
+	return String(confidence);
+};
+
+const formatIgnoreScope = (scope?: string | null) => {
+	if (!scope) return "Ignored";
+	if (scope === "shared") return "Ignored in project";
+	if (scope === "local") return "Ignored locally";
+	return `Ignored (${scope})`;
+};
+
+function SeverityBadge({ severity }: { severity?: string | null }) {
+	const level = normalizeSeverity(severity);
+	return (
+		<span
+			className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${SEVERITY_STYLES[level] || SEVERITY_STYLES.low}`}
+		>
+			{level}
+		</span>
+	);
+}
 
 /** Mask only the leaked substring inside a real source line (GitHub-style preview). */
 const maskSecretInLine = (line: string, secret: string, reveal: boolean) => {
@@ -1333,14 +1380,22 @@ export default function Analysis() {
 						<div className="grid grid-cols-1 md:grid-cols-3 gap-6">
 							<div className="p-6 rounded-2xl border border-slate-800 bg-[#0f172a]/50 flex flex-col justify-center">
 								<p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
-									Total Exposures
+									Unique Secrets
 								</p>
 								<div className="flex items-end gap-3 mt-2">
 									<p className="text-5xl font-black text-rose-500">
 										{results?.summary?.secretsFound ?? 0}
 									</p>
-									<p className="text-sm text-slate-500 mb-1">Secrets</p>
+									<p className="text-sm text-slate-500 mb-1">Findings</p>
 								</div>
+								<p className="mt-3 text-[11px] text-slate-500">
+									Total occurrences:{" "}
+									<span className="text-slate-300 font-semibold">
+										{results?.summary?.occurrencesFound ??
+											results?.summary?.secretsFound ??
+											0}
+									</span>
+								</p>
 								<div className="mt-4 h-1.5 w-full rounded-full bg-slate-800 overflow-hidden">
 									<div
 										className="h-full bg-rose-500 rounded-full"
@@ -1544,11 +1599,18 @@ export default function Analysis() {
 															<td className="px-4 py-3 text-xs text-cyan-400">
 																<div className="flex flex-col gap-1">
 																	<span>{r.secret.type}</span>
-																	{r.secret.severity && (
-																		<span className="text-[10px] uppercase text-amber-300">
-																			{r.secret.severity}
-																		</span>
-																	)}
+																	<div className="flex flex-wrap items-center gap-1.5">
+																		<SeverityBadge severity={r.secret.severity} />
+																		{r.secret.ignored ? (
+																			<span className="inline-flex items-center rounded-full border border-slate-600 bg-slate-800/70 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
+																				{r.secret.ignoreScope === "shared"
+																					? "Project ignore"
+																					: r.secret.ignoreScope === "local"
+																						? "Local ignore"
+																						: "Ignored"}
+																			</span>
+																		) : null}
+																	</div>
 																</div>
 															</td>
 															<td className="px-4 py-3 text-xs text-slate-400">
@@ -1747,7 +1809,25 @@ export default function Analysis() {
 													Line: <span className="text-cyan-400">{s.line}</span>{" "}
 													• Branch: {s.branch}
 												</p>
-												{(s.severity || s.confidence !== undefined || s.ignored) && (
+												<div className="mt-3 flex flex-wrap items-center gap-2">
+													<SeverityBadge severity={s.severity} />
+													<span className="inline-flex items-center rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-semibold text-cyan-200">
+														Confidence {formatConfidence(s.confidence)}
+													</span>
+													{s.ignored ? (
+														<span className="inline-flex items-center rounded-full border border-slate-600 bg-slate-800/80 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
+															{formatIgnoreScope(s.ignoreScope)}
+														</span>
+													) : (
+														<span className="inline-flex items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+															Active finding
+														</span>
+													)}
+													<span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
+														Occurrences {s.occurrenceCount ?? 1}
+													</span>
+												</div>
+												{false && (s.severity || s.confidence !== undefined || s.ignored) && (
 													<p className="text-[10px] text-slate-500 mt-2">
 														{s.severity ? `Severity: ${s.severity}` : ""}
 														{s.confidence !== undefined
@@ -1799,12 +1879,29 @@ export default function Analysis() {
 											</p>
 										)}
 
-										<div className="mt-4 pt-4 border-t border-slate-800 flex justify-between items-center text-[10px] text-slate-500">
-											<p>Commit Context</p>
+										<div className="mt-4 pt-4 border-t border-slate-800 flex flex-col gap-2 text-[10px] text-slate-500 sm:flex-row sm:items-center sm:justify-between">
+											<div>
+												<p>Commit Context</p>
+												{s.git?.note === "uncommitted" ? (
+													<p className="mt-1 text-amber-300 font-semibold">
+														Introduced in this commit
+													</p>
+												) : s.git?.firstSeenDate ? (
+													<p className="mt-1">
+														First seen {new Date(s.git.firstSeenDate).toLocaleDateString()}
+														{s.git.ageDays !== undefined &&
+														s.git.ageDays !== null
+															? ` • ${s.git.ageDays}d old`
+															: ""}
+													</p>
+												) : null}
+											</div>
 											<p className="font-mono bg-slate-900 px-2 py-1 rounded">
-												{s.commit && s.commit !== "N/A"
-													? s.commit.substring(0, 12)
-													: "Unknown Commit"}
+												{s.git?.note === "uncommitted"
+													? "Working tree"
+													: s.commit && s.commit !== "N/A"
+														? s.commit.substring(0, 12)
+														: "Unknown Commit"}
 											</p>
 										</div>
 									</div>

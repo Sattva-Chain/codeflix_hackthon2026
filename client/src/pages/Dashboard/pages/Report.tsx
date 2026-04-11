@@ -16,6 +16,42 @@ import { userAuth } from "../../../context/Auth";
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement);
 
 const CARD_STYLE = "p-8 rounded-xl bg-[#111827] border border-[#1E293B] shadow-2xl";
+const SEVERITY_STYLES: Record<string, string> = {
+  critical: "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-300",
+  high: "border-red-500/30 bg-red-500/10 text-red-300",
+  medium: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+  low: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+};
+
+const normalizeSeverity = (severity?: string | null) =>
+  String(severity || "low").trim().toLowerCase() || "low";
+
+const formatConfidence = (confidence?: number | null) => {
+  if (confidence === undefined || confidence === null) return "N/A";
+  if (confidence <= 1) return `${Math.round(confidence * 100)}%`;
+  return String(confidence);
+};
+
+const formatIgnoreScope = (scope?: string | null) => {
+  if (!scope) return "Ignored";
+  if (scope === "shared") return "Ignored in project";
+  if (scope === "local") return "Ignored locally";
+  return `Ignored (${scope})`;
+};
+
+const formatGitNote = (note?: string | null) => {
+  if (note === "uncommitted") return "Introduced in this commit";
+  return note || null;
+};
+
+const SeverityBadge = ({ severity }: { severity?: string | null }) => {
+  const level = normalizeSeverity(severity);
+  return (
+    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${SEVERITY_STYLES[level] || SEVERITY_STYLES.low}`}>
+      {level}
+    </span>
+  );
+};
 
 const Report = () => {
   const { user, repo, company } = userAuth() || {};
@@ -75,9 +111,26 @@ const Report = () => {
           ? finding.locations
           : [{ filePath: finding.filePath }];
         return locations.map((location: any) => ({
-          ...finding,
-          type: finding.secretType || finding.type,
-          file: location.filePath || finding.filePath,
+          id: finding.id || null,
+          fingerprint: finding.fingerprint || null,
+          type: finding.secretType || finding.type || "Secret",
+          file: location.filePath || finding.filePath || "unknown",
+          preview: location.preview || finding.preview || "Hidden",
+          severity: finding.severity || "low",
+          confidence:
+            typeof finding.confidence === "number" ? finding.confidence : null,
+          ignored:
+            location.ignored !== undefined ? !!location.ignored : !!finding.ignored,
+          ignoreScope: location.ignoreScope || finding.ignoreScope || null,
+          occurrenceCount:
+            typeof finding.occurrenceCount === "number" ? finding.occurrenceCount : 1,
+          lineStart:
+            typeof location.lineStart === "number"
+              ? location.lineStart
+              : typeof finding.lineStart === "number"
+                ? finding.lineStart
+                : null,
+          git: location.git || finding.git || null,
         }));
       });
       setRepoSecrets(secretsFlat);
@@ -91,6 +144,12 @@ const Report = () => {
     const date = new Date(d);
     return isNaN(date.getTime()) ? String(d) : date.toLocaleString();
   };
+
+  const uniqueSecretCount = selectedRepo?.TotalSecrets ?? repoSecrets.length;
+  const totalOccurrences = repoSecrets.reduce(
+    (total, secret) => total + (typeof secret.occurrenceCount === "number" ? secret.occurrenceCount : 1),
+    0,
+  );
 
   // --- Chart Configurations for Dark Mode ---
   const commonOptions = {
@@ -330,9 +389,14 @@ const Report = () => {
                   Exposed Secrets / Tokens Detected
                 </span>
               </div>
-              <span className={`text-3xl font-black ${repoSecrets.length > 0 ? "text-red-500" : "text-green-500"}`}>
-                {selectedRepo.TotalSecrets ?? repoSecrets.length}
-              </span>
+              <div className="text-right">
+                <p className={`text-3xl font-black ${repoSecrets.length > 0 ? "text-red-500" : "text-green-500"}`}>
+                  {uniqueSecretCount}
+                </p>
+                <p className="text-[11px] text-gray-400">
+                  {totalOccurrences} total occurrence{totalOccurrences === 1 ? "" : "s"}
+                </p>
+              </div>
             </div>
 
             {/* Secrets Badges & Charts */}
@@ -356,6 +420,52 @@ const Report = () => {
                   <div>
                     <h5 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-4">Distribution by File</h5>
                     <Bar data={secretsBarData} options={barOptions} />
+                  </div>
+                </div>
+                <div className="mt-6 space-y-3">
+                  <h4 className="text-xs text-gray-500 font-bold uppercase tracking-wider">Sanitized Finding History</h4>
+                  <div className="space-y-3">
+                    {repoSecrets.slice(0, 12).map((secret, idx) => (
+                      <div key={`${secret.id || secret.fingerprint || secret.file}-${idx}`} className="rounded-lg border border-[#1E293B] bg-[#0B1120] p-4">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0 space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="inline-flex items-center gap-1 rounded-md border border-[#1E293B] bg-[#111827] px-2 py-1 text-xs font-mono text-gray-200">
+                                <FiKey className="text-[#0ae8f0]" size={12} /> {secret.type}
+                              </span>
+                              <SeverityBadge severity={secret.severity} />
+                              {secret.ignored ? (
+                                <span className="inline-flex items-center rounded-full border border-slate-600 bg-slate-800/80 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
+                                  {formatIgnoreScope(secret.ignoreScope)}
+                                </span>
+                              ) : null}
+                            </div>
+                            <p className="font-mono text-sm text-[#0ae8f0] break-all">{secret.file}</p>
+                            <div className="rounded-md border border-[#1E293B] bg-[#111827] px-3 py-2 font-mono text-xs text-rose-300">
+                              {secret.preview || "Hidden"}
+                            </div>
+                            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-400">
+                              <span>Line: {secret.lineStart ?? "N/A"}</span>
+                              <span>Confidence: {formatConfidence(secret.confidence)}</span>
+                              <span>Occurrences: {secret.occurrenceCount ?? 1}</span>
+                              <span>Commit: {secret.git?.note === "uncommitted" ? "Working tree" : secret.git?.commit?.slice(0, 12) || "Unknown"}</span>
+                            </div>
+                            {(secret.git?.firstSeenDate || secret.git?.note) && (
+                              <p className="text-[11px] text-gray-500">
+                                {formatGitNote(secret.git?.note) || ""}
+                                {secret.git?.firstSeenDate
+                                  ? `${secret.git?.note ? " • " : ""}First seen ${formatDate(secret.git.firstSeenDate)}`
+                                  : ""}
+                              </p>
+                            )}
+                          </div>
+                          <div className="text-xs text-gray-500 sm:text-right">
+                            <p>Branch</p>
+                            <p className="mt-1 font-mono text-gray-300">{secret.git?.branch || selectedRepo.Branch || "N/A"}</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </>
