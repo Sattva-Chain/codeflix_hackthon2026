@@ -315,6 +315,7 @@ export default function Analysis() {
   const [githubToken, setGithubToken] = useState<string>("");
   const [saveGithubToken, setSaveGithubToken] = useState<boolean>(true);
   const [githubTokenLoaded, setGithubTokenLoaded] = useState<boolean>(false);
+  const [showShipAdvanced, setShowShipAdvanced] = useState<boolean>(false);
   const [lastCommitSha, setLastCommitSha] = useState<string | null>(null);
   const PAGE_SIZE = 6;
 
@@ -516,7 +517,7 @@ export default function Analysis() {
   const hasPendingChanges = !!remediation?.pendingChanges;
   const hasCommittedRemediation = !!remediation?.lastCommitSha || !!lastCommitSha;
   const canCommitNow = !!remediation?.canCommit && !!remediation?.canCommitNow;
-  const canPushNow = !!remediation?.canPush && !!remediation?.canCommitNow;
+  const canPushNow = !!remediation?.canPush && (hasPendingChanges || hasCommittedRemediation);
   const showShipPanel = hasPendingChanges || hasCommittedRemediation;
   const workflowSteps = [
     {
@@ -626,7 +627,7 @@ export default function Analysis() {
 
   const handleCommitPatch = async (push: boolean) => {
     if (!patchSessionId) return;
-    if (!hasPendingChanges) {
+    if (!hasPendingChanges && !(push && hasCommittedRemediation)) {
       setToastMessage("Apply a patch first. There are no remediation changes waiting to be committed.");
       return;
     }
@@ -645,12 +646,29 @@ export default function Analysis() {
         githubToken: githubToken.trim() || undefined,
       });
       setPatchDiff(data.diff ?? "");
-      setResults((prev) => withRemediationMeta(prev, data.remediation));
+      if (data.results) {
+        setResults(data.results);
+        await sendRepoDetails(data.results);
+        const remaining = data.results.summary?.secretsFound ?? 0;
+        logToConsole(
+          remaining === 0
+            ? "✓ Post-push rescan complete. No secrets remain in the remediation workspace."
+            : `⚠ Post-push rescan complete. ${remaining} secret${remaining === 1 ? "" : "s"} still remain.`
+        );
+      } else {
+        setResults((prev) => withRemediationMeta(prev, data.remediation));
+      }
       const nextSha = data.commit?.commitSha ?? data.remediation?.lastCommitSha ?? null;
       setLastCommitSha(nextSha);
       setToastMessage(
         data.commit?.pushed
-          ? `Branch ${data.commit.branchName} pushed to GitHub.`
+          ? (() => {
+              const remaining = data.results?.summary?.secretsFound ?? null;
+              if (remaining == null) return `Branch ${data.commit.branchName} pushed to GitHub.`;
+              return remaining === 0
+                ? `Branch ${data.commit.branchName} pushed. Post-push scan found no remaining secrets.`
+                : `Branch ${data.commit.branchName} pushed. Post-push scan still found ${remaining} secret${remaining === 1 ? "" : "s"}.`;
+            })()
           : `Commit created on ${data.commit?.branchName ?? branchName}.`
       );
     } catch (error: any) {
@@ -934,32 +952,31 @@ export default function Analysis() {
                       </span>
                     </div>
                     <p className="text-sm text-slate-300 mt-3 max-w-2xl leading-6">
-                      After patching, review the workspace changes here and then create a remediation commit or push the secure branch to GitHub.
+                      After patching, ship the secure fix to GitHub from here. We keep this step separate so the first scan experience stays focused and clean.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2 rounded-2xl border border-emerald-500/10 bg-black/15 p-2">
                     <button
                       type="button"
-                      onClick={() => handleCommitPatch(false)}
-                      disabled={!canCommitNow || patchBusyKey !== null}
+                      onClick={() => handleCommitPatch(true)}
+                      disabled={!canPushNow || patchBusyKey !== null}
                       className="px-4 py-2 rounded-lg bg-emerald-500 text-black text-xs font-bold hover:bg-emerald-400 disabled:opacity-50"
                     >
-                      {patchBusyKey === "commit" ? "Committing..." : "Commit Patch"}
+                      {patchBusyKey === "push" ? "Shipping..." : hasPendingChanges ? "Commit & Push" : "Push Branch"}
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleCommitPatch(true)}
-                      disabled={!canPushNow || patchBusyKey !== null}
-                      className="px-4 py-2 rounded-lg border border-amber-500/40 text-xs font-semibold text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
+                      onClick={() => setShowShipAdvanced((v) => !v)}
+                      className="px-4 py-2 rounded-lg border border-slate-700 text-xs font-semibold text-slate-200 hover:border-cyan-500/40 hover:bg-slate-800"
                     >
-                      {patchBusyKey === "push" ? "Pushing..." : "Commit & Push"}
+                      {showShipAdvanced ? "Hide Options" : "Advanced"}
                     </button>
                   </div>
                 </div>
               </div>
             )}
 
-            {showShipPanel && (
+            {showShipPanel && showShipAdvanced && (
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
                 <div className="xl:col-span-2">
                   <label className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block mb-2">Commit Message</label>

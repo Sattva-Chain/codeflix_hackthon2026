@@ -573,25 +573,31 @@ async function commitSession(session, payload = {}) {
     throw new Error("Commit and push are only available for Git repository scans.");
   }
 
-  const branchName = (payload.branchName || `secure/fix-secrets-${new Date().toISOString().slice(0, 10)}`).trim();
+  const branchName = (payload.branchName || session.lastBranchName || `secure/fix-secrets-${new Date().toISOString().slice(0, 10)}`).trim();
   const commitMessage = (payload.commitMessage || "fix(secrets): move hardcoded secrets to environment variables").trim();
   await ensureGitIdentity(session.repoPath);
 
   const { stdout: statusBefore } = await execFileAsync("git", ["status", "--porcelain"], { cwd: session.repoPath });
-  if (!String(statusBefore || "").trim()) {
+  const hasPendingChanges = !!String(statusBefore || "").trim();
+  if (!hasPendingChanges && !(payload.push && session.lastCommitSha)) {
     throw new Error("There are no remediation changes to commit yet.");
   }
 
-  await execFileAsync("git", ["checkout", "-B", branchName], { cwd: session.repoPath });
-  await execFileAsync("git", ["add", "--all"], { cwd: session.repoPath });
-  await execFileAsync("git", ["commit", "-m", commitMessage], { cwd: session.repoPath, maxBuffer: 1024 * 1024 * 10 });
+  let commitSha = session.lastCommitSha || null;
+  if (hasPendingChanges) {
+    await execFileAsync("git", ["checkout", "-B", branchName], { cwd: session.repoPath });
+    await execFileAsync("git", ["add", "--all"], { cwd: session.repoPath });
+    await execFileAsync("git", ["commit", "-m", commitMessage], { cwd: session.repoPath, maxBuffer: 1024 * 1024 * 10 });
 
-  const { stdout: shaStdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: session.repoPath });
-  const commitSha = String(shaStdout || "").trim();
-  session.lastCommitSha = commitSha || null;
-  session.lastBranchName = branchName;
-  session.lastOperation = payload.push ? "push" : "commit";
-  touchSession(session);
+    const { stdout: shaStdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: session.repoPath });
+    commitSha = String(shaStdout || "").trim();
+    session.lastCommitSha = commitSha || null;
+    session.lastBranchName = branchName;
+    session.lastOperation = payload.push ? "push" : "commit";
+    touchSession(session);
+  } else {
+    await execFileAsync("git", ["checkout", branchName], { cwd: session.repoPath });
+  }
 
   let pushed = false;
   if (payload.push) {

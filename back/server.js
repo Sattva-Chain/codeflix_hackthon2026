@@ -1049,15 +1049,30 @@ app.post("/patch/diff", async (req, res) => {
 app.post("/patch/commit", async (req, res) => {
   try {
     const session = getSession(req.body.sessionId);
-    console.log(session)
     if (!session) return res.status(404).json({ success: false, message: "Patch session not found or expired." });
     const commit = await commitSession(session, req.body);
     const diff = await getGitDiff(session);
+    let results = null;
+
+    if (req.body.push) {
+      let findings = await runTrufflehog(session.repoPath);
+      findings = findings.filter((f) => {
+        const file = getFindingFileKey(f);
+        return !ignorePatterns.some((pattern) => file.includes(pattern));
+      });
+      findings = filterEntropyFalsePositives(findings, session.repoPath);
+
+      const formatted = await formatResults(findings, session.repoPath, session.sourceType === "git");
+      updateSessionResults(session.sessionId, formatted);
+      results = await withRemediationMeta(formatted, session);
+    }
+
     return res.json({
       success: true,
       commit,
       diff,
       remediation: await buildSessionMeta(session),
+      results,
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: sanitizeErrorMessage(err.message) });
