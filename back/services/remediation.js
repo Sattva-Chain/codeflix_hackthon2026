@@ -46,6 +46,7 @@ function createSession({ repoPath, sourceType, repoUrl = null, branch = null, re
     lastCommitSha: null,
     lastBranchName: null,
     lastAppliedPatches: [],
+    lastChangedFiles: [],
     lastPreviewCount: 0,
     lastReadyPreviewCount: 0,
     lastAppliedCount: 0,
@@ -85,6 +86,7 @@ function closeSession(sessionId) {
 }
 
 function sessionMeta(session) {
+  const branchFiles = Array.isArray(session.lastChangedFiles) ? session.lastChangedFiles : [];
   return {
     sessionId: session.sessionId,
     sourceType: session.sourceType,
@@ -98,6 +100,8 @@ function sessionMeta(session) {
     lastReadyPreviewCount: session.lastReadyPreviewCount || 0,
     lastAppliedCount: session.lastAppliedCount || 0,
     lastOperation: session.lastOperation || "scan",
+    branchFiles,
+    branchFilesCount: branchFiles.length,
   };
 }
 
@@ -145,10 +149,25 @@ async function getWorkspaceStatus(session) {
 }
 
 async function buildSessionMeta(session) {
+  const workspace = await getWorkspaceStatus(session);
+  const fallbackBranchFiles =
+    workspace.changedFilesCount > 0 ? workspace.changedFiles : sessionMeta(session).branchFiles;
   return {
     ...sessionMeta(session),
-    ...(await getWorkspaceStatus(session)),
+    ...workspace,
+    branchFiles: fallbackBranchFiles,
+    branchFilesCount: fallbackBranchFiles.length,
   };
+}
+
+function parseChangedFilesFromStatus(statusOutput) {
+  return String(statusOutput || "")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .filter((line) => !line.startsWith("##"))
+    .map((line) => line.slice(3).trim())
+    .filter(Boolean)
+    .map((file) => file.replace(/\\/g, "/"));
 }
 
 function listFindingsFromResults(results) {
@@ -476,10 +495,13 @@ function applyPatches(session, payload = {}) {
   }
 
   const envNames = ready.map((preview) => preview.envName).filter(Boolean);
-  ensureEnvExample(session.repoPath, envNames);
-  ensureGitIgnore(session.repoPath);
+  const appendedEnvNames = ensureEnvExample(session.repoPath, envNames);
+  const updatedGitIgnore = ensureGitIgnore(session.repoPath);
+  if (appendedEnvNames.length > 0) changedFiles.add(".env.example");
+  if (updatedGitIgnore) changedFiles.add(".gitignore");
 
   session.lastAppliedPatches = previews;
+  session.lastChangedFiles = Array.from(changedFiles);
   session.lastAppliedCount = ready.length;
   session.lastOperation = "apply";
   touchSession(session);
@@ -579,6 +601,7 @@ async function commitSession(session, payload = {}) {
 
   const { stdout: statusBefore } = await execFileAsync("git", ["status", "--porcelain"], { cwd: session.repoPath });
   const hasPendingChanges = !!String(statusBefore || "").trim();
+  const changedFilesBeforeCommit = parseChangedFilesFromStatus(statusBefore);
   if (!hasPendingChanges && !(payload.push && session.lastCommitSha)) {
     throw new Error("There are no remediation changes to commit yet.");
   }
@@ -593,6 +616,7 @@ async function commitSession(session, payload = {}) {
     commitSha = String(shaStdout || "").trim();
     session.lastCommitSha = commitSha || null;
     session.lastBranchName = branchName;
+    session.lastChangedFiles = changedFilesBeforeCommit.length > 0 ? changedFilesBeforeCommit : session.lastChangedFiles;
     session.lastOperation = payload.push ? "push" : "commit";
     touchSession(session);
   } else {
@@ -645,6 +669,7 @@ async function rollbackSession(session, payload = {}) {
   const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: session.repoPath });
   const revertSha = String(stdout || "").trim();
   session.lastCommitSha = null;
+  session.lastChangedFiles = [];
   session.lastOperation = "rollback";
   touchSession(session);
   return { revertedCommitSha: targetSha, revertSha };

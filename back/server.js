@@ -5,6 +5,8 @@ const { execFile } = require("child_process");
 const AdmZip = require("adm-zip");
 const path = require("path");
 const fs = require("fs");
+const http = require("http");
+const https = require("https");
 const util = require("util");
 const cors = require("cors");
 const mongoose = require("mongoose");
@@ -61,6 +63,7 @@ const storage = multer.diskStorage({
   fileName: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
 const upload = multer({ storage });
+const AI_ANALYZE_URL = process.env.SECURE_SCAN_AI_URL || "https://secure-scan-ai-risk.onrender.com/analyze";
 app.get("/userdata",async(req,res)=>{
   const data = await user.find({})
   console.log(data)
@@ -106,6 +109,70 @@ async function runTrufflehog(scanPath) {
     return safeParseJson(stdout);
   } catch (error) {
     return safeParseJson(error.stdout || "");
+  }
+}
+
+async function analyzeCandidateWithAi(candidate) {
+  const text = String(candidate || "").trim();
+  if (!text || text === "Hidden" || text.length < 6) return null;
+  try {
+    if (typeof fetch === "function") {
+      const response = await fetch(AI_ANALYZE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(text),
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+      if (!data || typeof data !== "object") return null;
+      return data;
+    }
+  } catch {
+  }
+
+  try {
+    const target = new URL(AI_ANALYZE_URL);
+    const client = target.protocol === "http:" ? http : https;
+    const payload = JSON.stringify(text);
+
+    const data = await new Promise((resolve) => {
+      const request = client.request(
+        target,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(payload),
+          },
+        },
+        (response) => {
+          let body = "";
+          response.setEncoding("utf8");
+          response.on("data", (chunk) => {
+            body += chunk;
+          });
+          response.on("end", () => {
+            if ((response.statusCode || 500) < 200 || (response.statusCode || 500) >= 300) {
+              resolve(null);
+              return;
+            }
+            try {
+              resolve(JSON.parse(body));
+            } catch {
+              resolve(null);
+            }
+          });
+        }
+      );
+
+      request.on("error", () => resolve(null));
+      request.write(payload);
+      request.end();
+    });
+
+    return data && typeof data === "object" ? data : null;
+  } catch {
+    return null;
   }
 }
 
@@ -249,6 +316,36 @@ function pickPrimarySecret(f, needles) {
     if (first.length >= 3) return first;
   }
   return needles[0];
+}
+
+async function enrichFindingsWithAi(findings = []) {
+  if (!Array.isArray(findings) || !findings.length) {
+    return { findings, stats: { reviewed: 0, confirmed: 0 } };
+  }
+
+  const enriched = [];
+  let reviewed = 0;
+  let confirmed = 0;
+
+  for (const finding of findings) {
+    const needles = collectSecretNeedles(finding);
+    const candidate = pickPrimarySecret(finding, needles);
+    const ai = await analyzeCandidateWithAi(candidate);
+    if (ai) {
+      reviewed++;
+      if (ai.ai_analysis?.is_secret) confirmed++;
+      enriched.push({
+        ...finding,
+        ai_analysis: ai.ai_analysis || null,
+        ai_source: ai.source || null,
+        ai_candidate: ai.candidate || candidate,
+      });
+      continue;
+    }
+    enriched.push(finding);
+  }
+
+  return { findings: enriched, stats: { reviewed, confirmed } };
 }
 
 function rowNeedleList(row) {
@@ -823,6 +920,9 @@ async function formatResults(findings = [], repoPath = null, isGitRepo = false) 
       commit,
       branch,
       snippet,
+      aiAnalysis: f.ai_analysis || null,
+      aiSource: f.ai_source || null,
+      aiCandidate: f.ai_candidate || null,
     });
   }
 
@@ -848,6 +948,9 @@ async function formatResults(findings = [], repoPath = null, isGitRepo = false) 
       commit: r.commit,
       branch: r.branch,
       snippet: r.snippet,
+      aiAnalysis: r.aiAnalysis,
+      aiSource: r.aiSource,
+      aiCandidate: r.aiCandidate,
     });
     fileSet.add(r.file);
     total++;
@@ -861,6 +964,75 @@ async function withRemediationMeta(formatted, session) {
     ...formatted,
     remediation: await buildSessionMeta(session),
   };
+}
+
+async function buildScanResponse(scanPath, isGitRepo, extraMeta = {}) {
+  let findings = await runTrufflehog(scanPath);
+  findings = findings.filter((f) => {
+    const file = getFindingFileKey(f);
+    return !ignorePatterns.some((pattern) => file.includes(pattern));
+  });
+  findings = filterEntropyFalsePositives(findings, scanPath);
+
+  const aiEnriched = await enrichFindingsWithAi(findings);
+  const formatted = await formatResults(aiEnriched.findings, scanPath, isGitRepo);
+
+  return {
+    ...formatted,
+    scanMeta: {
+      scannedAt: new Date().toISOString(),
+      analyzer: {
+        url: AI_ANALYZE_URL,
+        reviewedCount: aiEnriched.stats.reviewed,
+        confirmedCount: aiEnriched.stats.confirmed,
+      },
+      ...extraMeta,
+    },
+  };
+}
+
+function buildAuthedGithubUrl(repoUrl, token) {
+  const trimmedRepo = String(repoUrl || "").trim();
+  const trimmedToken = String(token || "").trim();
+  if (!trimmedRepo) return null;
+  if (!trimmedToken) return trimmedRepo;
+
+  const encodedToken = encodeURIComponent(trimmedToken);
+  if (/^git@github\.com:/i.test(trimmedRepo)) {
+    const repo = trimmedRepo.replace(/^git@github\.com:/i, "");
+    return `https://x-access-token:${encodedToken}@github.com/${repo}`;
+  }
+  if (/^https:\/\/github\.com\//i.test(trimmedRepo)) {
+    return trimmedRepo.replace(/^https:\/\//i, `https://x-access-token:${encodedToken}@`);
+  }
+  return trimmedRepo;
+}
+
+async function buildFreshRemoteVerificationScan({ repoUrl, branchName, githubToken }) {
+  const verificationPath = path.join(tempDir, `${Date.now()}-repo-verify`);
+  const cloneUrl = buildAuthedGithubUrl(repoUrl, githubToken);
+
+  try {
+    await execFileAsync(
+      "git",
+      ["clone", "--depth", "1", "--branch", branchName, cloneUrl, verificationPath],
+      { maxBuffer: 1024 * 1024 * 10, timeout: 1000 * 60 * 5 }
+    );
+
+    return await buildScanResponse(verificationPath, true, {
+      mode: "post-push-verification",
+      sourceKind: "git",
+      repoUrl: repoUrl || null,
+      verification: {
+        performed: true,
+        scannedAt: new Date().toISOString(),
+        branch: branchName || null,
+        source: "fresh-remote-clone",
+      },
+    });
+  } finally {
+    try { fs.rmSync(verificationPath, { recursive: true, force: true }); } catch {}
+  }
 }
 
 function sanitizeErrorMessage(value) {
@@ -940,15 +1112,11 @@ app.post("/scan-url-remediation", async (req, res) => {
 
   try {
     await execFileAsync("git", ["clone", "--depth", "1", repoURL, clonePath]);
-
-    let findings = await runTrufflehog(clonePath);
-    findings = findings.filter((f) => {
-      const file = getFindingFileKey(f);
-      return !ignorePatterns.some((pattern) => file.includes(pattern));
+    const formatted = await buildScanResponse(clonePath, true, {
+      mode: "scan",
+      sourceKind: "git",
+      repoUrl: repoURL,
     });
-    findings = filterEntropyFalsePositives(findings, clonePath);
-
-    const formatted = await formatResults(findings, clonePath, true);
     const session = createSession({
       repoPath: clonePath,
       sourceType: "git",
@@ -972,14 +1140,11 @@ app.post("/scan-zip-remediation", upload.single("zipfile"), async (req, res) => 
     fs.mkdirSync(extractPath, { recursive: true });
     new AdmZip(zipPath).extractAllTo(extractPath);
 
-    let findings = await runTrufflehog(extractPath);
-    findings = findings.filter((f) => {
-      const file = getFindingFileKey(f);
-      return !ignorePatterns.some((pattern) => file.includes(pattern));
+    const formatted = await buildScanResponse(extractPath, false, {
+      mode: "scan",
+      sourceKind: "zip",
+      repoUrl: null,
     });
-    findings = filterEntropyFalsePositives(findings, extractPath);
-
-    const formatted = await formatResults(findings, extractPath, false);
     const session = createSession({
       repoPath: extractPath,
       sourceType: "zip",
@@ -1012,14 +1177,11 @@ app.post("/patch/apply", async (req, res) => {
     if (!session) return res.status(404).json({ success: false, message: "Patch session not found or expired." });
 
     const applyResult = applyPatches(session, req.body);
-    let findings = await runTrufflehog(session.repoPath);
-    findings = findings.filter((f) => {
-      const file = getFindingFileKey(f);
-      return !ignorePatterns.some((pattern) => file.includes(pattern));
+    const formatted = await buildScanResponse(session.repoPath, session.sourceType === "git", {
+      mode: "post-patch-scan",
+      sourceKind: session.sourceType,
+      repoUrl: session.repoUrl || null,
     });
-    findings = filterEntropyFalsePositives(findings, session.repoPath);
-
-    const formatted = await formatResults(findings, session.repoPath, session.sourceType === "git");
     updateSessionResults(session.sessionId, formatted);
     const diff = await getGitDiff(session);
 
@@ -1055,14 +1217,24 @@ app.post("/patch/commit", async (req, res) => {
     let results = null;
 
     if (req.body.push) {
-      let findings = await runTrufflehog(session.repoPath);
-      findings = findings.filter((f) => {
-        const file = getFindingFileKey(f);
-        return !ignorePatterns.some((pattern) => file.includes(pattern));
-      });
-      findings = filterEntropyFalsePositives(findings, session.repoPath);
-
-      const formatted = await formatResults(findings, session.repoPath, session.sourceType === "git");
+      const formatted =
+        session.repoUrl && session.lastBranchName
+          ? await buildFreshRemoteVerificationScan({
+              repoUrl: session.repoUrl,
+              branchName: session.lastBranchName,
+              githubToken: req.body.githubToken,
+            })
+          : await buildScanResponse(session.repoPath, session.sourceType === "git", {
+              mode: "post-push-verification",
+              sourceKind: session.sourceType,
+              repoUrl: session.repoUrl || null,
+              verification: {
+                performed: true,
+                scannedAt: new Date().toISOString(),
+                branch: session.lastBranchName || null,
+                source: "workspace-fallback",
+              },
+            });
       updateSessionResults(session.sessionId, formatted);
       results = await withRemediationMeta(formatted, session);
     }
@@ -1085,14 +1257,11 @@ app.post("/patch/rollback", async (req, res) => {
     if (!session) return res.status(404).json({ success: false, message: "Patch session not found or expired." });
 
     const rollback = await rollbackSession(session, req.body);
-    let findings = await runTrufflehog(session.repoPath);
-    findings = findings.filter((f) => {
-      const file = getFindingFileKey(f);
-      return !ignorePatterns.some((pattern) => file.includes(pattern));
+    const formatted = await buildScanResponse(session.repoPath, session.sourceType === "git", {
+      mode: "post-rollback-scan",
+      sourceKind: session.sourceType,
+      repoUrl: session.repoUrl || null,
     });
-    findings = filterEntropyFalsePositives(findings, session.repoPath);
-
-    const formatted = await formatResults(findings, session.repoPath, session.sourceType === "git");
     updateSessionResults(session.sessionId, formatted);
     const diff = await getGitDiff(session);
 

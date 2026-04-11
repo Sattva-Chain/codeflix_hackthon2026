@@ -46,6 +46,15 @@ type Secret = {
   commit: string;
   branch: string;
   snippet?: CodeSnippet | null;
+  aiAnalysis?: {
+    is_secret?: boolean;
+    risk_score?: number;
+    confidence?: number;
+    reason?: string;
+    service?: string;
+  } | null;
+  aiSource?: string | null;
+  aiCandidate?: string | null;
 };
 
 type RemediationMeta = {
@@ -66,6 +75,8 @@ type RemediationMeta = {
   changedFiles?: string[];
   changedFilesCount?: number;
   canCommitNow?: boolean;
+  branchFiles?: string[];
+  branchFilesCount?: number;
 };
 
 type PatchPreview = {
@@ -88,6 +99,23 @@ export type ScanResults = {
   message?: string;
   clean?: boolean;
   remediation?: RemediationMeta;
+  scanMeta?: {
+    scannedAt?: string;
+    mode?: string;
+    sourceKind?: string;
+    repoUrl?: string | null;
+    analyzer?: {
+      url?: string;
+      reviewedCount?: number;
+      confirmedCount?: number;
+    };
+    verification?: {
+      performed?: boolean;
+      scannedAt?: string;
+      branch?: string | null;
+      source?: string;
+    };
+  };
 };
 
 // --- Icons ---
@@ -139,6 +167,13 @@ const normalizeUiError = (message: string) => {
 
 const stepState = (done: boolean, active: boolean) =>
   done ? "done" : active ? "active" : "idle";
+
+const formatTimestamp = (value?: string | null) => {
+  if (!value) return "Not available";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not available";
+  return date.toLocaleString();
+};
 
 /** Mask only the leaked substring inside a real source line (GitHub-style preview). */
 const maskSecretInLine = (line: string, secret: string, reveal: boolean) => {
@@ -316,6 +351,7 @@ export default function Analysis() {
   const [saveGithubToken, setSaveGithubToken] = useState<boolean>(true);
   const [githubTokenLoaded, setGithubTokenLoaded] = useState<boolean>(false);
   const [showShipAdvanced, setShowShipAdvanced] = useState<boolean>(false);
+  const [shipMode, setShipMode] = useState<"commit" | "push">("push");
   const [lastCommitSha, setLastCommitSha] = useState<string | null>(null);
   const PAGE_SIZE = 6;
 
@@ -474,6 +510,19 @@ export default function Analysis() {
     return arr;
   }, [results]);
 
+  const aiSummary = useMemo(() => {
+    const scored = flatRows.filter((row) => row.secret.aiAnalysis?.confidence != null);
+    const avgConfidence = scored.length
+      ? Math.round(
+          scored.reduce((sum, row) => sum + (row.secret.aiAnalysis?.confidence ?? 0), 0) / scored.length * 100
+        )
+      : 0;
+    return {
+      scoredCount: scored.length,
+      avgConfidence,
+    };
+  }, [flatRows]);
+
   const pagedRows = flatRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const totalPages = Math.max(1, Math.ceil(flatRows.length / PAGE_SIZE));
   const diffLines = useMemo(() => patchDiff.split(/\r?\n/).filter((line, index, arr) => !(index === arr.length - 1 && line === "")), [patchDiff]);
@@ -512,6 +561,7 @@ export default function Analysis() {
   const patchSessionId = results?.remediation?.sessionId ?? null;
   const canUsePatchAgent = !!patchSessionId && !results?.error;
   const remediation = results?.remediation;
+  const scanMeta = results?.scanMeta;
   const previewReadyCount = remediation?.lastReadyPreviewCount ?? 0;
   const appliedCount = remediation?.lastAppliedCount ?? 0;
   const hasPendingChanges = !!remediation?.pendingChanges;
@@ -519,6 +569,11 @@ export default function Analysis() {
   const canCommitNow = !!remediation?.canCommit && !!remediation?.canCommitNow;
   const canPushNow = !!remediation?.canPush && (hasPendingChanges || hasCommittedRemediation);
   const showShipPanel = hasPendingChanges || hasCommittedRemediation;
+  const verificationPerformed = !!scanMeta?.verification?.performed;
+  const verificationRemaining = results?.summary?.secretsFound ?? 0;
+  const branchFiles = remediation?.branchFiles?.length ? remediation.branchFiles : remediation?.changedFiles ?? [];
+  const branchFilesCount = remediation?.branchFilesCount ?? branchFiles.length;
+  const effectiveShipMode: "commit" | "push" = hasPendingChanges ? shipMode : "push";
   const workflowSteps = [
     {
       label: "Preview",
@@ -749,37 +804,53 @@ export default function Analysis() {
       <style>{styles}</style>
 
       {/* Top Header Navigation */}
-      <header className="border-b border-slate-800 bg-[#0f172a]/80 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-cyan-400 to-blue-600 rounded-xl flex items-center justify-center shadow-[0_0_15px_rgba(6,182,212,0.4)]">
-              <span className="text-white font-black text-xl">S</span>
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-white tracking-wide">SECURE<span className="text-cyan-400">SCAN</span></h1>
-              <p className="text-[10px] text-slate-400 font-mono uppercase tracking-widest">Enterprise Threat Analysis</p>
-            </div>
-          </div>
+      <header className="border-b border-slate-800/80 bg-[#020617]/90 backdrop-blur-xl sticky top-0 z-40">
+        <div className="max-w-7xl mx-auto px-6 py-4">
+          <div className="rounded-[24px] border border-slate-800 bg-[radial-gradient(circle_at_top_left,rgba(6,182,212,0.16),transparent_26%),linear-gradient(135deg,rgba(15,23,42,0.98),rgba(2,6,23,0.98))] px-5 py-4 shadow-[0_20px_50px_rgba(2,6,23,0.35)]">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 bg-gradient-to-br from-cyan-400 to-blue-600 rounded-2xl flex items-center justify-center shadow-[0_0_20px_rgba(6,182,212,0.35)]">
+                  <span className="text-white font-black text-2xl">S</span>
+                </div>
+                <div>
+                  <h1 className="text-2xl font-black text-white tracking-[0.04em]">SECURE<span className="text-cyan-400">SCAN</span></h1>
+                  <p className="text-[10px] text-slate-400 font-mono uppercase tracking-[0.28em] mt-1">Enterprise Threat Analysis</p>
+                </div>
+              </div>
 
-          <div className="flex items-center gap-6">
-            <div className="text-right hidden md:block">
-              <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Engine Status</p>
-              <div className="flex items-center gap-2 justify-end mt-0.5">
-                {loading && <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />}
-                {!loading && <div className={`w-2 h-2 rounded-full ${results?.error ? 'bg-rose-500' : isClean(results) ? 'bg-emerald-500' : results ? 'bg-amber-500' : 'bg-slate-600'}`} />}
-                <p className={`text-xs font-bold ${loading ? "text-cyan-400" : results?.error ? "text-rose-400" : isClean(results) ? "text-emerald-400" : results ? "text-amber-400" : "text-slate-400"}`}>
-                  {loading ? "Analyzing..." : results?.error ? "System Error" : isClean(results) ? "System Secure" : results ? "Vulnerabilities Found" : "Standby"}
-                </p>
+              <div className="flex flex-col gap-3 lg:items-end">
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="rounded-2xl border border-slate-800 bg-[#020617]/90 px-4 py-3 min-w-[180px]">
+                    <p className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.22em]">Engine Status</p>
+                    <div className="flex items-center gap-2 mt-2">
+                      {loading && <div className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse" />}
+                      {!loading && <div className={`w-2.5 h-2.5 rounded-full ${results?.error ? 'bg-rose-500' : isClean(results) ? 'bg-emerald-500' : results ? 'bg-amber-500' : 'bg-slate-600'}`} />}
+                      <p className={`text-sm font-bold ${loading ? "text-cyan-400" : results?.error ? "text-rose-400" : isClean(results) ? "text-emerald-400" : results ? "text-amber-400" : "text-slate-400"}`}>
+                        {loading ? "Analyzing..." : results?.error ? "System Error" : isClean(results) ? "System Secure" : results ? "Vulnerabilities Found" : "Standby"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-800 bg-[#020617]/90 px-4 py-3 min-w-[150px]">
+                    <p className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.22em]">AI Confidence</p>
+                    <p className="text-lg font-semibold text-cyan-300 mt-2">
+                      {aiSummary.scoredCount > 0 ? `${aiSummary.avgConfidence}% avg` : "Not scored"}
+                    </p>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      {aiSummary.scoredCount} key{aiSummary.scoredCount === 1 ? "" : "s"} scored by analyzer
+                    </p>
+                  </div>
+
+                  {loading ? (
+                    <div className="radar-loader" aria-hidden><div className="radar-inner" /></div>
+                  ) : results && !results.error && !isClean(results) && (
+                    <button onClick={generatePDFReport} className="px-4 py-3 rounded-2xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs shadow-[0_0_15px_rgba(245,158,11,0.3)] transition-all flex items-center">
+                      <DownloadIcon /> Export PDF
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
-            
-            {loading ? (
-               <div className="radar-loader" aria-hidden><div className="radar-inner" /></div>
-            ) : results && !results.error && !isClean(results) && (
-              <button onClick={generatePDFReport} className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs shadow-[0_0_15px_rgba(245,158,11,0.3)] transition-all flex items-center">
-                <DownloadIcon /> Export PDF
-              </button>
-            )}
           </div>
         </div>
       </header>
@@ -835,6 +906,52 @@ export default function Analysis() {
               <p className="text-emerald-500/80 text-sm mt-0.5">{results.message ?? "Deep layer inspection completed. No exposed secrets found in this codebase."}</p>
             </div>
           </div>
+        )}
+
+        {results?.scanMeta && !results.error && (
+          <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            <div className="rounded-2xl border border-slate-800 bg-[#0f172a]/60 p-4">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500 font-bold">Scan Timeline</p>
+              <p className="text-lg font-semibold text-white mt-2">
+                {formatTimestamp(scanMeta?.scannedAt)}
+              </p>
+              <p className="text-xs text-slate-500 mt-2 capitalize">{scanMeta?.mode?.replace(/-/g, " ") || "scan"}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-800 bg-[#0f172a]/60 p-4">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500 font-bold">AI Validation</p>
+              <p className="text-lg font-semibold text-cyan-300 mt-2">
+                {scanMeta?.analyzer?.reviewedCount ?? 0} reviewed
+              </p>
+              <p className="text-xs text-slate-500 mt-2">
+                {scanMeta?.analyzer?.confirmedCount ?? 0} confirmed by analyzer before response
+              </p>
+              <p className="text-[11px] text-slate-500 mt-2 truncate" title={scanMeta?.analyzer?.url || "https://secure-scan-ai-risk.onrender.com/analyze"}>
+                Source: {(scanMeta?.analyzer?.url || "https://secure-scan-ai-risk.onrender.com/analyze").replace(/^https?:\/\//, "")}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-slate-800 bg-[#0f172a]/60 p-4">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500 font-bold">Branch Snapshot</p>
+              <p className="text-lg font-semibold text-white mt-2 font-mono">
+                {remediation?.lastBranchName || remediation?.currentBranch || "main"}
+              </p>
+              <p className="text-xs text-slate-500 mt-2">
+                {branchFilesCount > 0
+                  ? `${branchFilesCount} file${branchFilesCount === 1 ? "" : "s"} tracked in the remediation branch`
+                  : "Branch will be created once a patch is committed"}
+              </p>
+            </div>
+            <div className={`rounded-2xl border p-4 ${verificationPerformed ? verificationRemaining === 0 ? "border-emerald-500/20 bg-emerald-500/10" : "border-amber-500/20 bg-amber-500/10" : "border-slate-800 bg-[#0f172a]/60"}`}>
+              <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500 font-bold">Verification Scan</p>
+              <p className={`text-lg font-semibold mt-2 ${verificationPerformed ? verificationRemaining === 0 ? "text-emerald-300" : "text-amber-300" : "text-slate-300"}`}>
+                {verificationPerformed ? verificationRemaining === 0 ? "No secrets remain" : `${verificationRemaining} still detected` : "Waiting for push"}
+              </p>
+              <p className="text-xs text-slate-500 mt-2">
+                {verificationPerformed
+                  ? `Auto-ran on ${formatTimestamp(scanMeta?.verification?.scannedAt || scanMeta?.scannedAt)} for ${scanMeta?.verification?.branch || remediation?.lastBranchName || "secure branch"}${scanMeta?.verification?.source === "fresh-remote-clone" ? " using a fresh remote clone" : ""}`
+                  : "Runs automatically once the remediation branch is pushed."}
+              </p>
+            </div>
+          </section>
         )}
 
         {results?.remediation && !results.error && (
@@ -941,6 +1058,36 @@ export default function Analysis() {
               </div>
             </div>
 
+            {branchFiles.length > 0 && (
+              <div className="rounded-2xl border border-slate-800 bg-[#020617] p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500 font-bold">Branch Changes</p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      {hasPendingChanges
+                        ? "Files currently changed in the remediation workspace."
+                        : "Files preserved from the latest remediation commit or push."}
+                    </p>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-full border border-slate-700 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-300">
+                    {branchFilesCount} files
+                  </span>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {branchFiles.slice(0, 8).map((file) => (
+                    <span key={file} className="px-3 py-1.5 rounded-full border border-slate-800 bg-slate-950/50 text-[11px] font-mono text-slate-300">
+                      {file}
+                    </span>
+                  ))}
+                  {branchFiles.length > 8 && (
+                    <span className="px-3 py-1.5 rounded-full border border-slate-800 bg-slate-950/50 text-[11px] font-semibold text-slate-400">
+                      +{branchFiles.length - 8} more
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
             {showShipPanel && (
               <div className="rounded-2xl border border-emerald-500/15 bg-[linear-gradient(180deg,rgba(16,185,129,0.07),rgba(2,6,23,0.92))] p-4">
                 <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4">
@@ -954,45 +1101,90 @@ export default function Analysis() {
                     <p className="text-sm text-slate-300 mt-3 max-w-2xl leading-6">
                       After patching, ship the secure fix to GitHub from here. We keep this step separate so the first scan experience stays focused and clean.
                     </p>
+                    {hasPendingChanges && (
+                      <div className="mt-4 inline-flex rounded-xl border border-slate-800 bg-[#020617] p-1">
+                        <button
+                          type="button"
+                          onClick={() => setShipMode("commit")}
+                          className={`px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${
+                            shipMode === "commit"
+                              ? "bg-slate-200 text-slate-950"
+                              : "text-slate-300 hover:bg-slate-800"
+                          }`}
+                        >
+                          Commit Only
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShipMode("push")}
+                          className={`px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${
+                            shipMode === "push"
+                              ? "bg-emerald-400 text-slate-950"
+                              : "text-slate-300 hover:bg-slate-800"
+                          }`}
+                        >
+                          Commit & Push
+                        </button>
+                      </div>
+                    )}
+                    <p className="text-xs text-slate-500 mt-3">
+                      {effectiveShipMode === "push"
+                        ? "After a successful push, the app automatically runs one more scan and shows whether any API keys or secrets still remain."
+                        : "Choose commit only if you want to review the branch locally before pushing it to GitHub."}
+                    </p>
                   </div>
-                  <div className="flex flex-wrap gap-2 rounded-2xl border border-emerald-500/10 bg-black/15 p-2">
-                    <button
-                      type="button"
-                      onClick={() => handleCommitPatch(true)}
-                      disabled={!canPushNow || patchBusyKey !== null}
-                      className="px-4 py-2 rounded-lg bg-emerald-500 text-black text-xs font-bold hover:bg-emerald-400 disabled:opacity-50"
-                    >
-                      {patchBusyKey === "push" ? "Shipping..." : hasPendingChanges ? "Commit & Push" : "Push Branch"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowShipAdvanced((v) => !v)}
-                      className="px-4 py-2 rounded-lg border border-slate-700 text-xs font-semibold text-slate-200 hover:border-cyan-500/40 hover:bg-slate-800"
-                    >
-                      {showShipAdvanced ? "Hide Options" : "Advanced"}
-                    </button>
+                  <div className="w-full xl:w-[360px] rounded-2xl border border-emerald-500/10 bg-black/15 p-3 space-y-3">
+                    <div>
+                      <label className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block mb-2">Target Branch</label>
+                      <input
+                        type="text"
+                        value={branchName}
+                        onChange={(e) => setBranchName(e.target.value)}
+                        placeholder="secure/fix-secrets-2026-04-12"
+                        className="w-full px-4 py-3 rounded-xl bg-[#020617] border border-slate-700 text-sm text-white outline-none focus:border-cyan-500"
+                      />
+                      <p className="text-[11px] text-slate-500 mt-2">
+                        The remediation commit and push will use this branch name.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleCommitPatch(effectiveShipMode === "push")}
+                        disabled={(effectiveShipMode === "push" ? !canPushNow : !canCommitNow) || patchBusyKey !== null}
+                        className="px-4 py-2 rounded-lg bg-emerald-500 text-black text-xs font-bold hover:bg-emerald-400 disabled:opacity-50"
+                      >
+                        {patchBusyKey === "push"
+                          ? "Shipping..."
+                          : patchBusyKey === "commit"
+                          ? "Committing..."
+                          : hasPendingChanges
+                          ? effectiveShipMode === "push"
+                            ? "Commit & Push"
+                            : "Create Commit"
+                          : "Push Branch"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowShipAdvanced((v) => !v)}
+                        className="px-4 py-2 rounded-lg border border-slate-700 text-xs font-semibold text-slate-200 hover:border-cyan-500/40 hover:bg-slate-800"
+                      >
+                        {showShipAdvanced ? "Hide Options" : "Advanced"}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
             )}
 
             {showShipPanel && showShipAdvanced && (
-              <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-                <div className="xl:col-span-2">
+              <div className="grid grid-cols-1 gap-4">
+                <div>
                   <label className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block mb-2">Commit Message</label>
                   <input
                     type="text"
                     value={commitMessage}
                     onChange={(e) => setCommitMessage(e.target.value)}
-                    className="w-full px-4 py-3 rounded-xl bg-[#020617] border border-slate-700 text-sm text-white outline-none focus:border-cyan-500"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block mb-2">Branch Name</label>
-                  <input
-                    type="text"
-                    value={branchName}
-                    onChange={(e) => setBranchName(e.target.value)}
                     className="w-full px-4 py-3 rounded-xl bg-[#020617] border border-slate-700 text-sm text-white outline-none focus:border-cyan-500"
                   />
                 </div>
@@ -1008,14 +1200,16 @@ export default function Analysis() {
                     value={githubToken}
                     onChange={(e) => setGithubToken(e.target.value)}
                     placeholder={
-                      results.remediation.canPush
+                      results.remediation.canPush && effectiveShipMode === "push"
                         ? githubTokenLoaded
                           ? "Auto-loaded on this device if previously saved"
                           : "Loading saved token..."
+                        : effectiveShipMode === "commit"
+                        ? "Token not needed for commit-only mode"
                         : "Push disabled for ZIP workspace"
                     }
                     className="w-full px-4 py-3 rounded-xl bg-[#010616] border border-slate-700 text-sm text-white outline-none focus:border-cyan-500 disabled:opacity-50"
-                    disabled={!results.remediation.canPush || !showShipPanel}
+                    disabled={!results.remediation.canPush || !showShipPanel || effectiveShipMode !== "push"}
                   />
                   <div className="mt-3 flex flex-wrap items-center gap-3">
                     <label className="inline-flex items-center gap-2 text-xs text-slate-400">
@@ -1104,9 +1298,9 @@ export default function Analysis() {
                             </span>
                           </div>
                           <p className="text-[11px] text-slate-500 mt-2">Line {preview.line} • {preview.envName ?? "No env name"}</p>
+                          {preview.reason && <p className="text-xs text-rose-400 mt-2">{preview.reason}</p>}
                           {preview.oldLine && <p className="text-xs text-rose-300 font-mono mt-3 break-all">- {preview.oldLine}</p>}
                           {preview.newLine && <p className="text-xs text-emerald-300 font-mono mt-1 break-all">+ {preview.newLine}</p>}
-                          {preview.reason && <p className="text-xs text-rose-400 mt-2">{preview.reason}</p>}
                         </div>
                       ))}
                     </div>
@@ -1276,6 +1470,7 @@ export default function Analysis() {
                         <th className="px-4 py-3 font-semibold">File</th>
                         <th className="px-4 py-3 font-semibold">Exposed Secret</th>
                         <th className="px-4 py-3 font-semibold">Classification</th>
+                        <th className="px-4 py-3 font-semibold">Confidence</th>
                         <th className="px-4 py-3 font-semibold">Line</th>
                         <th className="px-4 py-3 font-semibold">Source</th>
                         <th className="px-4 py-3 font-semibold text-right">Actions</th>
@@ -1293,7 +1488,35 @@ export default function Analysis() {
                               <td className="px-4 py-3 font-mono text-xs text-rose-400">
                                 {revealSecrets[r.findingKey] ? r.secret.secret : mask(r.secret.secret)}
                               </td>
-                              <td className="px-4 py-3 text-xs text-cyan-400">{r.secret.type}</td>
+                              <td className="px-4 py-3 text-xs">
+                                <div className="flex flex-col gap-1">
+                                  <span className="text-cyan-400">{r.secret.type}</span>
+                                  {r.secret.aiAnalysis?.is_secret && (
+                                    <span className="inline-flex w-fit items-center gap-1 px-2 py-0.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 text-[9px] font-bold uppercase tracking-[0.18em] text-emerald-300">
+                                      AI {r.secret.aiAnalysis.service || "Verified"}
+                                    </span>
+                                  )}
+                                  {r.secret.aiAnalysis?.confidence != null && (
+                                    <span className="text-[10px] text-slate-500">
+                                      {Math.round(r.secret.aiAnalysis.confidence * 100)}% confidence
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 text-xs">
+                                {r.secret.aiAnalysis ? (
+                                  <div className="flex flex-col gap-1">
+                                    <span className="font-semibold text-emerald-300">
+                                      {Math.round((r.secret.aiAnalysis.confidence ?? 0) * 100)}%
+                                    </span>
+                                    <span className="text-[10px] text-slate-500">
+                                      Risk {Math.round((r.secret.aiAnalysis.risk_score ?? 0) * 100)}%
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <span className="text-slate-500">Not scored</span>
+                                )}
+                              </td>
                               <td className="px-4 py-3 text-xs text-slate-400">#{r.secret.line}</td>
                               <td className="px-4 py-3">
                                 <button
@@ -1331,8 +1554,34 @@ export default function Analysis() {
                             </tr>
                             {expanded && (
                               <tr>
-                                <td colSpan={6} className="p-0 border-t-0">
+                                <td colSpan={7} className="p-0 border-t-0">
                                   <div className="px-4 py-4 bg-[#050810] border-t border-slate-800/80">
+                                    {r.secret.aiAnalysis && (
+                                      <div className="mb-4 rounded-2xl border border-emerald-500/15 bg-emerald-500/8 p-4">
+                                        <div className="flex flex-wrap items-center justify-between gap-3">
+                                          <div>
+                                            <p className="text-[10px] uppercase tracking-[0.22em] text-emerald-300 font-bold">AI Verdict</p>
+                                            <p className="text-sm text-slate-200 mt-2">
+                                              {r.secret.aiAnalysis.service || "Secret analyzer"} marked this candidate as{" "}
+                                              <span className="font-semibold text-emerald-300">
+                                                {r.secret.aiAnalysis.is_secret ? "likely secret" : "needs review"}
+                                              </span>
+                                            </p>
+                                          </div>
+                                          <div className="flex flex-wrap gap-2">
+                                            <span className="px-2.5 py-1 rounded-full border border-slate-700 bg-slate-950/70 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-200">
+                                              Risk {Math.round((r.secret.aiAnalysis.risk_score ?? 0) * 100)}%
+                                            </span>
+                                            <span className="px-2.5 py-1 rounded-full border border-slate-700 bg-slate-950/70 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-200">
+                                              Confidence {Math.round((r.secret.aiAnalysis.confidence ?? 0) * 100)}%
+                                            </span>
+                                          </div>
+                                        </div>
+                                        <p className="text-xs text-slate-400 mt-3 leading-5">
+                                          {r.secret.aiAnalysis.reason || "Validated before the scan response was sent to the frontend."}
+                                        </p>
+                                      </div>
+                                    )}
                                     {hasSnippet && r.secret.snippet ? (
                                       <SourceSnippetView
                                         snippet={r.secret.snippet}
@@ -1411,6 +1660,35 @@ export default function Analysis() {
                   <div className="bg-black/50 p-3 rounded-lg border border-slate-800 font-mono text-xs overflow-x-auto text-rose-300">
                     {revealSecrets[findingKey] ? s.secret : mask(s.secret)}
                   </div>
+
+                  {s.aiAnalysis && (
+                    <>
+                      <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <div className="rounded-xl border border-emerald-500/15 bg-emerald-500/8 p-3">
+                          <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold">Confidence</p>
+                          <p className="text-lg font-semibold text-emerald-300 mt-2">
+                            {Math.round((s.aiAnalysis.confidence ?? 0) * 100)}%
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                          <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold">Risk Score</p>
+                          <p className="text-lg font-semibold text-amber-300 mt-2">
+                            {Math.round((s.aiAnalysis.risk_score ?? 0) * 100)}%
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                          <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold">Analyzer Service</p>
+                          <p className="text-sm font-semibold text-cyan-300 mt-2">
+                            {s.aiAnalysis.service || "Unknown"}
+                          </p>
+                        </div>
+                      </div>
+
+                      <p className="mt-3 text-xs text-slate-400 leading-5">
+                        {s.aiAnalysis.reason || "Validated by the remote analyzer before this finding was shown in the UI."}
+                      </p>
+                    </>
+                  )}
 
                   {s.snippet && s.snippet.lines?.length > 0 ? (
                     <div className="mt-4">
