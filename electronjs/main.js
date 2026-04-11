@@ -1,13 +1,30 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
-import { fileURLToPath } from "url";
-import path from "path";
-import Store from "electron-store";
-import fs from "fs";
+const { app, BrowserWindow, ipcMain, dialog } = require("electron/main");
+const path = require("path");
+const fs = require("fs");
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const storeDir = path.join(__dirname, ".electron-store");
+const storeFile = path.join(storeDir, "secure-scan.json");
 
-const store = new Store();
+function ensureStoreDir() {
+  if (!fs.existsSync(storeDir)) {
+    fs.mkdirSync(storeDir, { recursive: true });
+  }
+}
+
+function readStore() {
+  try {
+    ensureStoreDir();
+    if (!fs.existsSync(storeFile)) return {};
+    return JSON.parse(fs.readFileSync(storeFile, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeStore(nextState) {
+  ensureStoreDir();
+  fs.writeFileSync(storeFile, JSON.stringify(nextState, null, 2), "utf8");
+}
 
 const indexPath = path.resolve(__dirname, "../client/dist/index.html");
 /** Packaged app, or local run with: npm run start:dist (loads client/dist, no Vite). */
@@ -52,16 +69,20 @@ function createWindow() {
     🔐 AUTH TOKEN STORAGE HANDLERS
 ------------------------------------------------------------------ */
 ipcMain.handle("company-token", (event, token) => {
-  store.set("companyToken", token);
+  const state = readStore();
+  state.companyToken = token;
+  writeStore(state);
   return true;
 });
 
 ipcMain.handle("get-token", () => {
-  return store.get("companyToken");
+  return readStore().companyToken ?? null;
 });
 
 ipcMain.handle("clear-token", () => {
-  store.delete("companyToken");
+  const state = readStore();
+  delete state.companyToken;
+  writeStore(state);
   return true;
 });
 

@@ -15,6 +15,15 @@ const { default: comp } = require("./models/company");
 const execFileAsync = util.promisify(execFile);
 const app = express();
 const PORT = 3000;
+const bundledTrufflehogPath = path.resolve(__dirname, "../electronjs/bin/trufflehog-win.exe");
+const trufflehogCommand =
+  process.env.TRUFFLEHOG_PATH ||
+  (process.platform === "win32" && fs.existsSync(bundledTrufflehogPath)
+    ? bundledTrufflehogPath
+    : "trufflehog");
+const mongoUri =
+  process.env.MONGODB_URI ||
+  "mongodb+srv://kr551344:o43CV2CxzEyrBKVj@cluster0.iabyjku.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -32,7 +41,9 @@ app.use(
 );
 
 mongoose
-  .connect("mongodb+srv://kr551344:o43CV2CxzEyrBKVj@cluster0.iabyjku.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+  .connect(mongoUri, {
+    serverSelectionTimeoutMS: 5000,
+  })
   .then(() => console.log("✅ MongoDB Connected"))
   .catch((err) => console.error("❌ MongoDB Error:", err.message));
 
@@ -46,7 +57,7 @@ if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
-  fileName: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
 const upload = multer({ storage });
 app.get("/userdata",async(req,res)=>{
@@ -87,13 +98,20 @@ const ignorePatterns = [
 async function runTrufflehog(scanPath) {
   const args = ["--json", `file://${scanPath}`];
   try {
-    const { stdout } = await execFileAsync("trufflehog", args, {
+    const { stdout } = await execFileAsync(trufflehogCommand, args, {
       maxBuffer: 1024 * 1024 * 80,
       timeout: 1000 * 60 * 10,
     });
     return safeParseJson(stdout);
   } catch (error) {
-    return safeParseJson(error.stdout || "");
+    const parsed = safeParseJson(error.stdout || "");
+    if (parsed.length) return parsed;
+    if (error.code === "ENOENT") {
+      throw new Error(
+        `TruffleHog executable not found. Set TRUFFLEHOG_PATH or place the binary at ${bundledTrufflehogPath}.`
+      );
+    }
+    throw new Error(error.stderr || error.message || "TruffleHog scan failed");
   }
 }
 

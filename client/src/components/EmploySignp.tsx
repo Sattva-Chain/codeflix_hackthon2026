@@ -12,10 +12,10 @@ function EmployeeSignup() {
     const handleSignup = async (e) => {
   e.preventDefault();
   try {
-    const { data } = await axios.post("http://localhost:3000/signup", { email, password });
+    const { data } = await axios.post("http://localhost:3000/api/signup", { email, password });
     if (data.success) {
       toast.success(data.message)
-      window.electronAPI.storeToken(data.tokenUser);
+      await window.electronAPI?.storeToken?.(data.tokenUser);
       nav("/");
     } else {
         toast.error(data.message)

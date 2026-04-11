@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "Desktop UI and server for TruffleHog Secret Scanner",
   "main": "main.js",
-  "type": "module",
   "scripts": {
     "start": "electron .",
     "start:dist": "electron . --dist",

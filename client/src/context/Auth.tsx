@@ -2,6 +2,8 @@ import { createContext, useState, useEffect, useContext, type ReactNode } from "
 import axios from "axios";
 import { useNavigate } from "react-router-dom"; // Fixed: Added useNavigate import
 
+const TOKEN_STORAGE_KEY = "secure-scan-token";
+
 // 1. Expanded UserData to include fields used in Dashboard/Report
 interface UserData {
   _id: string;
@@ -71,10 +73,21 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   
   const navigate = useNavigate(); // Fixed: Defined navigate
 
+  const readStoredToken = async () => {
+    const electronToken = await window.electronAPI?.getToken?.();
+    if (electronToken) return electronToken;
+
+    try {
+      return window.localStorage.getItem(TOKEN_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  };
+
   // ✅ Load token initially
   useEffect(() => {
     const loadToken = async () => {
-      const savedToken = await window.electronAPI?.getToken?.();
+      const savedToken = await readStoredToken();
       if (savedToken) setTokenState(savedToken);
     };
     loadToken();
@@ -83,6 +96,16 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   // Fixed: window.electronAPI mapping (using storeToken as seen in errors)
   const setToken = async (newToken: string | null) => {
     setTokenState(newToken);
+    try {
+      if (newToken) {
+        window.localStorage.setItem(TOKEN_STORAGE_KEY, newToken);
+      } else {
+        window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage errors in restricted contexts.
+    }
+
     if (newToken) {
       await window.electronAPI?.storeToken?.(newToken);
     } else {
@@ -90,8 +113,32 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const login = async (token: string) => {
-    await setToken(token);
+  const refreshUserByToken = async (activeToken: string | null) => {
+    if (!activeToken) return;
+
+    try {
+      const userRes = await axios.post("http://localhost:3000/api/authsss", { token: activeToken });
+      if (userRes.data.success) {
+        setRepo(userRes.data.repositories || []);
+        setUser(userRes.data.userDatas);
+        setCompany(null);
+        return;
+      }
+
+      const companyRes = await axios.post("http://localhost:3000/api/auths", { token: activeToken });
+      if (companyRes.data.success) {
+        setCompany(companyRes.data.compnaydatas);
+        setRepo(null);
+        setUser(null);
+      }
+    } catch (error) {
+      console.error("âŒ Auth Refresh Failed:", error);
+    }
+  };
+
+  const login = async (nextToken: string) => {
+    await setToken(nextToken);
+    await refreshUserByToken(nextToken);
   };
 
   const logout = async () => {
@@ -103,7 +150,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const refreshUser = async () => {
-    if (!token) return;
+    await refreshUserByToken(token);
+    return;
 
     try {
       // ✅ Fetch User/Staff Data

@@ -21,7 +21,7 @@ import autoTable from "jspdf-autotable";
 // 🛑 MODIFIED IPC DECLARATION
 declare global {
   interface Window {
-    electronAPI: {
+    electronAPI?: {
       storeToken: (token: string) => Promise<void>;
       getToken: () => Promise<string | null>;
       clearToken: () => Promise<void>;

@@ -4,11 +4,12 @@ import { useState, type ChangeEvent, type FormEvent } from "react";
 import toast, { Toaster } from "react-hot-toast";
 import { useNavigate } from "react-router-dom";
 import { userAuth } from "../../context/Auth";
+import logoUrl from "/Gemini_Generated_Image_3pferw3pferw3pfe-removebg-preview.png";
 
 const Login = () => {
   const [activeTab, setActiveTab] = useState("organization");
   const [loading, setLoading] = useState(false);
-  const { refreshUser } = userAuth()!;
+  const { login } = userAuth()!;
   const navigate = useNavigate();
 
   // State Objects
@@ -44,11 +45,8 @@ const Login = () => {
 
   // ✅ Token storage helper
   const finalizeLogin = async (tokens: string) => {
-    if (window.electronAPI) {
-      await window.electronAPI.storeToken(tokens);
-    }
-    await refreshUser();
-    navigate("/Dashboard2");
+    await login(tokens);
+    navigate("/Dashboard2/scans");
   };
 
   // ✅ Organization Create Account
@@ -124,7 +122,7 @@ const Login = () => {
         {/* Header */}
         <div className="flex items-center gap-3 mb-6">
           <div className="bg-white/10 rounded-2xl p-2">
-            <img src="/logo.png" className="w-10 h-10" alt="logo" />
+            <img src={logoUrl} className="w-10 h-10 object-contain" alt="SecureScan logo" />
           </div>
           <div>
             <h1 className="text-xl font-semibold text-white">SecureScan</h1>
@@ -189,6 +187,13 @@ const Login = () => {
         </div>
 
         <p className="text-center text-xs text-gray-500 mt-6 italic">SecureScan v1.0 © 2026</p>
+        <button
+          type="button"
+          onClick={() => navigate("/Dashboard2/scans")}
+          className="mt-4 w-full rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-sm font-semibold text-cyan-300 transition hover:bg-cyan-500/20"
+        >
+          Continue in local scan mode
+        </button>
       </div>
 
       {/* Tailwind Component Styles */}

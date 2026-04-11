@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const bcrypt = require("bcrypt");
-const { User } = require("../models/user");
+const { default: User } = require("../models/user");
 const {
   createTokenForUser,
   validateToken,

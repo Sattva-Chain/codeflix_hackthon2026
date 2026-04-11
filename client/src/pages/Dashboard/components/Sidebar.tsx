@@ -11,6 +11,7 @@ import {
   LogOut,
 } from "lucide-react";
 import { userAuth } from "../../../context/Auth";
+import logoUrl from "/Gemini_Generated_Image_3pferw3pferw3pfe-removebg-preview.png";
 
 const Sidebar: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
@@ -50,7 +51,7 @@ const Sidebar: React.FC = () => {
       {/* Header / Logo Section */}
       <div className="flex items-center gap-3 px-6 pt-8 pb-6">
         <img
-          src="/Gemini_Generated_Image_3pferw3pferw3pfe-removebg-preview.png"
+          src={logoUrl}
           className="w-8 h-8 object-contain"
           alt="SecureScan Logo"
         />

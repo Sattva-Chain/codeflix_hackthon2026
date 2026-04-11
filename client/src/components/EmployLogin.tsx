@@ -11,10 +11,10 @@ function EmployeeLogin() {
     const handleLogin = async (e) => {
         e.preventDefault();
         try {
-            const { data } = await axios.post("http://localhost:3000/login", { empId });
+            const { data } = await axios.post("http://localhost:3000/api/login", { empId });
             if (data.success) {
                 toast.success(data.message)
-                window.electronAPI.storeToken(data.tokenUser);
+                await window.electronAPI?.storeToken?.(data.tokenUser);
                 nav("/Dashboard")
                 
             }

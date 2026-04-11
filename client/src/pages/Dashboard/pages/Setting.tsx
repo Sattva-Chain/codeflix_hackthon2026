@@ -34,11 +34,12 @@ interface UserData {
 const Settings: React.FC = () => {
   const navigate = useNavigate();
   const auth = userAuth();
-  const { user, company, setUser, setCompany } = auth! as {
+  const { user, company, setUser, setCompany, logout } = auth! as {
     user: UserData | null;
     company: CompanyData | null;
     setUser: (u: any) => void;
     setCompany: (c: any) => void;
+    logout: () => Promise<void>;
   };
 
   const [activeTab, setActiveTab] = useState("Profile");
@@ -53,13 +54,10 @@ const Settings: React.FC = () => {
   }, [user, company]);
 
   const logoutHandler = async () => {
-    if (window.electronAPI) {
-      await window.electronAPI.clearToken();
-    }
+    await logout();
     setUser(null);
     setCompany(null);
     navigate("/");
-    window.location.reload();
   };
 
   return (
