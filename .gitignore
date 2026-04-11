@@ -10,3 +10,4 @@ build/
 
 back/uploads/
 *.zip
+electronjs/bin/trufflehog-win.exe
