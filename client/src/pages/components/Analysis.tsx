@@ -3,6 +3,12 @@ import React, { useState, FormEvent } from "react";
 import axios from "axios";
 import { userAuth } from "../../context/Auth";
 
+const maskSecret = (s: string) => {
+  if (!s) return "";
+  if (s.length <= 10) return s.replace(/.(?=.{2})/g, "*");
+  return s.slice(0, 4) + "..." + s.slice(-4);
+};
+
 interface Secret {
   secret: string;
   type: string;
@@ -38,6 +44,7 @@ const Analysis: React.FC = () => {
   const [zipFile, setZipFile] = useState<File | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [results, setResults] = useState<ScanResults | null>(null);
+  const [revealByRow, setRevealByRow] = useState<Record<string, boolean>>({});
 
   const axiosInstance = axios.create({
     baseURL: "http://127.0.0.1:3000",
@@ -48,6 +55,7 @@ const Analysis: React.FC = () => {
   const handleScan = async (scanType: "url" | "zip", payload: any) => {
     setLoading(true);
     setResults(null);
+    setRevealByRow({});
     try {
       let response;
       if (scanType === "url") {
@@ -184,19 +192,32 @@ const Analysis: React.FC = () => {
                       <th className="px-4 py-2">Type</th>
                       <th className="px-4 py-2 text-center">Verified</th>
                       <th className="px-4 py-2">Commit</th>
+                      <th className="px-4 py-2 text-right">Reveal</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
                     {Object.entries(results.vulnerabilities).flatMap(([file, secrets]) =>
-                      secrets.map((s, idx) => (
-                        <tr key={`${file}-${idx}`} className="bg-white hover:bg-slate-50 transition">
+                      secrets.map((s, idx) => {
+                        const rowKey = `${file}#${idx}`;
+                        const show = !!revealByRow[rowKey];
+                        return (
+                        <tr key={rowKey} className="bg-white hover:bg-slate-50 transition">
                           <td className="px-4 py-2 font-medium text-slate-900 break-all">{file}</td>
-                          <td className="px-4 py-2 font-mono text-red-600 break-all">{s.secret}</td>
+                          <td className="px-4 py-2 font-mono text-red-600 break-all">{show ? s.secret : maskSecret(s.secret)}</td>
                           <td className="px-4 py-2">{s.type}</td>
                           <td className="px-4 py-2 text-center">{s.isVerified ? "✅" : "❌"}</td>
                           <td className="px-4 py-2 font-mono text-xs">{s.commit.substring(0, 10)}...</td>
+                          <td className="px-4 py-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() => setRevealByRow((p) => ({ ...p, [rowKey]: !p[rowKey] }))}
+                              className="text-xs font-semibold text-slate-700 underline decoration-slate-400 hover:text-slate-900"
+                            >
+                              {show ? "Hide" : "Reveal"}
+                            </button>
+                          </td>
                         </tr>
-                      ))
+                      );})
                     )}
                   </tbody>
                 </table>

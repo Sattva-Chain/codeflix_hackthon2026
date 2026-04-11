@@ -5,3 +5,6 @@ trufflehog
 dist 
 
 dist_electron
+
+back/uploads/
+*.zip

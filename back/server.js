@@ -220,6 +220,68 @@ function getFindingLine(f) {
   return "N/A";
 }
 
+/**
+ * All distinct substrings TruffleHog reported (never join with commas — that breaks in-file lookup).
+ */
+function collectSecretNeedles(f) {
+  const out = [];
+  const add = (v) => {
+    if (v == null) return;
+    if (Array.isArray(v)) {
+      for (const x of v) add(x);
+      return;
+    }
+    const s = String(v).trim();
+    if (s.length >= 3 && s !== "Hidden" && !out.includes(s)) out.push(s);
+  };
+  add(f.Raw);
+  add(f.raw);
+  add(f.Secret);
+  add(f.SecretString);
+  add(f.raw_string);
+  add(f.stringsFound);
+  return out;
+}
+
+/** One value for the table/PDF; prefer explicit Raw/Secret, else first stringsFound entry. */
+function pickPrimarySecret(f, needles) {
+  if (!needles.length) return "Hidden";
+  for (const key of ["Raw", "raw", "Secret", "SecretString", "raw_string"]) {
+    const v = f[key];
+    if (v != null && String(v).trim().length >= 3) return String(v).trim();
+  }
+  if (Array.isArray(f.stringsFound) && f.stringsFound.length) {
+    const first = String(f.stringsFound[0]).trim();
+    if (first.length >= 3) return first;
+  }
+  return needles[0];
+}
+
+function rowNeedleList(row) {
+  if (row.needles?.length) return row.needles;
+  if (row.secret && row.secret !== "Hidden" && String(row.secret).length >= 3) return [row.secret];
+  return [];
+}
+
+/** Try each needle until one maps to a source line (fixes High Entropy + stringsFound arrays). */
+function findSecretLineMulti(lines, fullText, needles) {
+  const list = Array.isArray(needles) ? needles : needles ? [needles] : [];
+  for (const n of list) {
+    if (n == null || String(n).length < 3) continue;
+    const hit = findSecretLine(lines, fullText, String(n));
+    if (hit) return hit;
+  }
+  for (const n of list) {
+    const s = String(n).trim();
+    const hex = s.replace(/[^a-f0-9]/gi, "");
+    if (hex.length !== 24) continue;
+    const lower = hex.toLowerCase();
+    const idx = lines.findIndex((ln) => ln.toLowerCase().includes(lower));
+    if (idx >= 0) return { idx, needle: s };
+  }
+  return null;
+}
+
 /** Resolve path inside repo only (blocks path traversal). Uses real paths on disk (Windows-safe). */
 function resolveSafeRepoFile(repoPath, fileKey) {
   if (!repoPath || !fileKey || fileKey === "unknown") return null;
@@ -241,6 +303,123 @@ function resolveSafeRepoFile(repoPath, fileKey) {
   if (relFromRoot.startsWith("..") || path.isAbsolute(relFromRoot)) return null;
   if (!fs.existsSync(candidate)) return null;
   return candidate;
+}
+
+function detectorIsEntropyOnly(f) {
+  const d = (
+    f.DetectorName ??
+    f.detectorName ??
+    f.DetectorType ??
+    f.detectorType ??
+    f.Reason ??
+    f.reason ??
+    ""
+  )
+    .toString()
+    .toLowerCase();
+  return d.includes("entropy");
+}
+
+function isTestOrFixturePath(fileKey) {
+  const f = String(fileKey).replace(/\\/g, "/").toLowerCase();
+  return (
+    /(^|\/)(tests?|__tests__|fixtures?|mocks?|testing)(\/|$)/.test(f) ||
+    /(^|\/)test_[^/]+\.py$/.test(f) ||
+    /(^|\/)[^/]+_test\.py$/.test(f) ||
+    f.includes("conftest.py") ||
+    f.endsWith("conftest.py")
+  );
+}
+
+/** Route strings and Mongo-style IDs in paths are not API keys. */
+function anyNeedleLooksLikeRouteOrSample(needles) {
+  const list = Array.isArray(needles) ? needles : [];
+  for (const n of list) {
+    const s = String(n).trim();
+    if (s.length < 8) continue;
+    if (s.startsWith("/") && /\/[a-f0-9]{12,}/i.test(s)) return true;
+    if (/\/admin\/|\/api\/|\/v\d+\//i.test(s)) return true;
+    if (s.startsWith("/") && s.split("/").length >= 4 && /^\/[a-z0-9/_-]+$/i.test(s)) return true;
+  }
+  return false;
+}
+
+function contextSuggestsExampleOrTest(low, fileIsTestPath) {
+  if (!low) return false;
+  const strong =
+    /json_schema|schema_extra|"example"|'example'|example\s*=|fixtures?|@pytest|unittest\.|parametrize/.test(low) ||
+    /\bget_page_type\b/.test(low) ||
+    /\bclass\s+config\b/.test(low) ||
+    /\bmock\.|faker\.|factory\./.test(low);
+  if (strong) return true;
+  if (fileIsTestPath && /\bassert\s+/.test(low)) return true;
+  return false;
+}
+
+function readSourceContextLower(repoPath, fileKey, lineVal, pad = 6) {
+  const pl = parseInt(String(lineVal), 10);
+  if (!repoPath || !fileKey || fileKey === "unknown" || !Number.isFinite(pl) || pl < 1) return "";
+  const norm = String(fileKey).replace(/\\/g, "/").trim();
+  const keysToTry = [];
+  if (norm && norm !== "unknown") keysToTry.push(norm);
+  const parts = norm.split("/").filter(Boolean);
+  for (let i = 1; i < parts.length; i++) keysToTry.push(parts.slice(i).join("/"));
+  for (const key of keysToTry) {
+    const abs = resolveSafeRepoFile(repoPath, key);
+    if (!abs) continue;
+    try {
+      const lines = fs.readFileSync(abs, "utf8").split(/\r?\n/);
+      const i = pl - 1;
+      if (i < 0 || i >= lines.length) continue;
+      const start = Math.max(0, i - pad);
+      const end = Math.min(lines.length, i + pad + 1);
+      return lines.slice(start, end).join("\n").toLowerCase();
+    } catch {
+      continue;
+    }
+  }
+  return "";
+}
+
+/**
+ * High Entropy flags any random-looking string; drop obvious non-secrets (tests, URLs, schema examples).
+ * Does not affect named detectors (AWS, GitHub, private keys, etc.).
+ */
+function shouldDropHighEntropyFalsePositive(f, repoPath) {
+  if (!repoPath || !detectorIsEntropyOnly(f)) return false;
+
+  const fileKey = getFindingFileKey(f);
+  const needles = collectSecretNeedles(f);
+  const primary =
+    needles.length > 0 ? pickPrimarySecret(f, needles) : "Hidden";
+  const lineVal = getFindingLine(f);
+  const ctx = readSourceContextLower(repoPath, fileKey, lineVal, 6);
+
+  const testPath = isTestOrFixturePath(fileKey);
+  const routeLike = anyNeedleLooksLikeRouteOrSample(needles.length ? needles : primary !== "Hidden" ? [primary] : []);
+  const exampleOrTestCtx = contextSuggestsExampleOrTest(ctx, testPath);
+
+  if (exampleOrTestCtx) return true;
+  if (testPath && routeLike) return true;
+
+  const hexOnly = primary.replace(/[^a-f0-9]/gi, "");
+  if (testPath && hexOnly.length === 24 && /^[a-f0-9]{24}$/i.test(hexOnly)) return true;
+
+  const fLower = String(fileKey).replace(/\\/g, "/").toLowerCase();
+  const base = path.posix.basename(fLower);
+  const apiSchemaFile =
+    /^api[_v]/.test(base) ||
+    /(routes|schemas|models|schema|openapi)/.test(fLower);
+
+  if (apiSchemaFile && hexOnly.length === 24 && /^[a-f0-9]{24}$/i.test(hexOnly)) return true;
+  if (apiSchemaFile && routeLike) return true;
+
+  return false;
+}
+
+function filterEntropyFalsePositives(findings, repoPath) {
+  if (!findings?.length || !repoPath) return findings;
+  return findings.filter((f) => !shouldDropHighEntropyFalsePositive(f, repoPath));
 }
 
 /** TruffleHog Raw often differs slightly from disk (quotes, escapes); try several forms. */
@@ -307,7 +486,9 @@ function findSecretLine(lines, fullText, secret) {
   return null;
 }
 
-function readSnippetFromAbsoluteFile(absPath, lineNum, rawSecret, contextLines) {
+function readSnippetFromAbsoluteFile(absPath, lineNum, needles, contextLines) {
+  const needleList = Array.isArray(needles) ? needles : needles ? [needles] : [];
+
   let content;
   try {
     const buf = fs.readFileSync(absPath);
@@ -321,10 +502,22 @@ function readSnippetFromAbsoluteFile(absPath, lineNum, rawSecret, contextLines) 
   let targetIdx = -1;
 
   if (lineNum != null && Number.isFinite(lineNum) && lineNum >= 1 && lineNum <= lines.length) {
-    targetIdx = lineNum - 1;
-  } else if (rawSecret && String(rawSecret).length >= 3) {
-    const hit = findSecretLine(lines, content, rawSecret);
+    const lineText = lines[lineNum - 1] ?? "";
+    if (
+      !needleList.length ||
+      needleList.some((n) => n && lineText.includes(String(n)))
+    ) {
+      targetIdx = lineNum - 1;
+    }
+  }
+
+  if (targetIdx < 0 && needleList.length) {
+    const hit = findSecretLineMulti(lines, content, needleList);
     if (hit) targetIdx = hit.idx;
+  }
+
+  if (targetIdx < 0 && lineNum != null && Number.isFinite(lineNum) && lineNum >= 1 && lineNum <= lines.length) {
+    targetIdx = lineNum - 1;
   }
 
   if (targetIdx < 0) return null;
@@ -342,7 +535,7 @@ function readSnippetFromAbsoluteFile(absPath, lineNum, rawSecret, contextLines) 
  * Real source lines around the finding (like GitHub secret scanning).
  * Tries full path, then strips leading segments (ZIPs often add one root folder).
  */
-function buildCodeSnippet(repoPath, fileKey, lineNum, rawSecret, contextLines = 5) {
+function buildCodeSnippet(repoPath, fileKey, lineNum, needles, contextLines = 5) {
   const keysToTry = [];
   const norm = String(fileKey).replace(/\\/g, "/").trim();
   if (norm && norm !== "unknown") keysToTry.push(norm);
@@ -354,7 +547,7 @@ function buildCodeSnippet(repoPath, fileKey, lineNum, rawSecret, contextLines = 
   for (const key of keysToTry) {
     const abs = resolveSafeRepoFile(repoPath, key);
     if (abs) {
-      const snip = readSnippetFromAbsoluteFile(abs, lineNum, rawSecret, contextLines);
+      const snip = readSnippetFromAbsoluteFile(abs, lineNum, needles, contextLines);
       if (snip) return snip;
     }
   }
@@ -380,7 +573,7 @@ const WALK_SKIP_DIRS = new Set([
  */
 function assignSnippetsBasenamePass(repoRoot, pendingRows) {
   const stillNeed = pendingRows.filter(
-    (r) => !r.snippet && r.file && r.file !== "unknown" && r.secret.length >= 3 && r.secret !== "Hidden"
+    (r) => !r.snippet && r.file && r.file !== "unknown" && rowNeedleList(r).length > 0
   );
   if (!stillNeed.length) return;
 
@@ -449,11 +642,11 @@ function assignSnippetsBasenamePass(repoRoot, pendingRows) {
 
     for (const row of rows) {
       if (row.snippet) continue;
-      const hit = findSecretLine(lines, text, row.secret);
+      const hit = findSecretLineMulti(lines, text, rowNeedleList(row));
       if (!hit) continue;
       row.line = hit.idx + 1;
       row.file = relUnix;
-      row.snippet = readSnippetFromAbsoluteFile(absPath, hit.idx + 1, row.secret, 5);
+      row.snippet = readSnippetFromAbsoluteFile(absPath, hit.idx + 1, rowNeedleList(row), 5);
     }
   }
 
@@ -541,12 +734,13 @@ function assignSnippetsByRepoWalk(repoRoot, pendingRows) {
 
     for (const row of pendingRows) {
       if (row.snippet) continue;
-      if (!row.secret || row.secret.length < 3 || row.secret === "Hidden") continue;
-      const hit = findSecretLine(lines, text, row.secret);
+      const needles = rowNeedleList(row);
+      if (!needles.length) continue;
+      const hit = findSecretLineMulti(lines, text, needles);
       if (!hit) continue;
       row.line = hit.idx + 1;
       row.file = relUnix;
-      row.snippet = readSnippetFromAbsoluteFile(absPath, hit.idx + 1, row.secret, 5);
+      row.snippet = readSnippetFromAbsoluteFile(absPath, hit.idx + 1, needles, 5);
     }
   }
 
@@ -600,14 +794,11 @@ async function formatResults(findings = [], repoPath = null, isGitRepo = false) 
       f.Rule ||
       f.rule ||
       "Secret";
-    const secret =
-      f.Raw ||
-      f.raw ||
-      f.Secret ||
-      (Array.isArray(f.stringsFound) && f.stringsFound.join(", ")) ||
-      f.SecretString ||
-      f.raw_string ||
-      "Hidden";
+
+    const needles = collectSecretNeedles(f);
+    const secret = pickPrimarySecret(f, needles);
+    const needlesForSnippet =
+      needles.length > 0 ? needles : secret !== "Hidden" ? [secret] : [];
 
     let line = getFindingLine(f);
     let commit =
@@ -621,7 +812,7 @@ async function formatResults(findings = [], repoPath = null, isGitRepo = false) 
     let lineForSnippet = Number.isFinite(parsedLine) && parsedLine > 0 ? parsedLine : null;
 
     let snippet = repoPath
-      ? buildCodeSnippet(repoPath, file, lineForSnippet, String(secret))
+      ? buildCodeSnippet(repoPath, file, lineForSnippet, needlesForSnippet)
       : null;
 
     if (snippet && (String(line) === "N/A" || lineForSnippet == null)) {
@@ -633,6 +824,7 @@ async function formatResults(findings = [], repoPath = null, isGitRepo = false) 
       file,
       type,
       secret: String(secret),
+      needles: needlesForSnippet,
       line,
       commit,
       branch,
@@ -641,9 +833,7 @@ async function formatResults(findings = [], repoPath = null, isGitRepo = false) 
   }
 
   if (repoPath) {
-    const pending = rows.filter(
-      (r) => !r.snippet && r.secret.length >= 3 && r.secret !== "Hidden"
-    );
+    const pending = rows.filter((r) => !r.snippet && rowNeedleList(r).length > 0);
     assignSnippetsBasenamePass(repoPath, pending);
     assignSnippetsByRepoWalk(
       repoPath,
@@ -692,6 +882,8 @@ app.post("/scan-url", async (req, res) => {
       return !ignorePatterns.some((pattern) => file.includes(pattern));
     });
 
+    findings = filterEntropyFalsePositives(findings, clonePath);
+
     const formatted = await formatResults(findings, clonePath, true);
     return res.json(formatted);
   } catch (err) {
@@ -719,6 +911,8 @@ app.post("/scan-zip", upload.single("zipfile"), async (req, res) => {
       const file = getFindingFileKey(f);
       return !ignorePatterns.some((pattern) => file.includes(pattern));
     });
+
+    findings = filterEntropyFalsePositives(findings, extractPath);
 
     const formatted = await formatResults(findings, extractPath, false);
     return res.json(formatted);

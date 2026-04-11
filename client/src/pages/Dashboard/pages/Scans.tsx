@@ -100,6 +100,20 @@ const maskSecretInLine = (line: string, secret: string, reveal: boolean) => {
   return line.split(secret).join(mask(secret));
 };
 
+/** When the scanner value does not exactly match the file text, still redact the leak line until Reveal. */
+const displaySnippetLine = (
+  line: string,
+  secret: string,
+  reveal: boolean,
+  isLeakLine: boolean
+) => {
+  if (!isLeakLine) return maskSecretInLine(line, secret, reveal);
+  if (reveal || !secret || secret === "Hidden") return line;
+  const partial = maskSecretInLine(line, secret, false);
+  if (partial !== line) return partial;
+  return "/* REDACTED — source differs from detector match; use Reveal to show this line */";
+};
+
 /** VS Code–style editor chrome; inline styles so Electron + file:// always paints correctly. */
 function SourceSnippetView({
   snippet,
@@ -169,7 +183,7 @@ function SourceSnippetView({
       >
         {snippet.lines.map((row) => {
           const isLeak = row.num === snippet.highlightLine;
-          const display = maskSecretInLine(row.text, secret, reveal);
+          const display = displaySnippetLine(row.text, secret, reveal, isLeak);
           const text = display || "\u00a0";
           return (
             <div
@@ -351,9 +365,9 @@ export default function Analysis() {
 
   const flatRows = useMemo(() => {
     if (!results?.vulnerabilities) return [];
-    const arr: { file: string; secret: Secret }[] = [];
+    const arr: { file: string; secret: Secret; findingKey: string }[] = [];
     Object.entries(results.vulnerabilities).forEach(([file, secrets]) => {
-      secrets.forEach((s) => arr.push({ file, secret: s }));
+      secrets.forEach((s, indexInFile) => arr.push({ file, secret: s, findingKey: `${file}#${indexInFile}` }));
     });
     return arr;
   }, [results]);
@@ -383,7 +397,6 @@ export default function Analysis() {
       logToConsole("→ Syncing telemetry with security database...");
       const { data: res } = await axios.post("http://localhost:3000/api/numberkeys", body);
       logToConsole("✅ Telemetry sync complete.");
-      console.log(data)
       if (res?.user) {
         setUser(res.user);
         refreshUser();
@@ -640,7 +653,7 @@ export default function Analysis() {
                             <tr className="hover:bg-slate-800/30 transition-colors">
                               <td className="px-4 py-3 text-xs text-slate-300 max-w-[150px] truncate" title={r.file}>{r.file.split('/').pop()}</td>
                               <td className="px-4 py-3 font-mono text-xs text-rose-400">
-                                {revealSecrets[r.file] ? r.secret.secret : mask(r.secret.secret)}
+                                {revealSecrets[r.findingKey] ? r.secret.secret : mask(r.secret.secret)}
                               </td>
                               <td className="px-4 py-3 text-xs text-cyan-400">{r.secret.type}</td>
                               <td className="px-4 py-3 text-xs text-slate-400">#{r.secret.line}</td>
@@ -662,8 +675,8 @@ export default function Analysis() {
                                 </button>
                               </td>
                               <td className="px-4 py-3 flex justify-end gap-2">
-                                <button type="button" onClick={() => setRevealSecrets((p) => ({ ...p, [r.file]: !p[r.file] }))} className="px-2 py-1 rounded border border-slate-700 hover:bg-slate-800 text-[10px] text-slate-300">
-                                  {revealSecrets[r.file] ? 'Hide' : 'Reveal'}
+                                <button type="button" onClick={() => setRevealSecrets((p) => ({ ...p, [r.findingKey]: !p[r.findingKey] }))} className="px-2 py-1 rounded border border-slate-700 hover:bg-slate-800 text-[10px] text-slate-300">
+                                  {revealSecrets[r.findingKey] ? 'Hide' : 'Reveal'}
                                 </button>
                                 <button type="button" onClick={() => setSelectedFile(r.file)} className="px-2 py-1 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 text-[10px] font-semibold">
                                   Inspect
@@ -678,7 +691,7 @@ export default function Analysis() {
                                       <SourceSnippetView
                                         snippet={r.secret.snippet}
                                         secret={r.secret.secret}
-                                        reveal={!!revealSecrets[r.file]}
+                                        reveal={!!revealSecrets[r.findingKey]}
                                         fileTitle={r.file.split("/").pop()}
                                       />
                                     ) : null}
@@ -735,20 +748,22 @@ export default function Analysis() {
             </div>
             
             <div className="p-6 overflow-y-auto space-y-4 bg-[#0f172a]">
-              {(results.vulnerabilities[selectedFile] || []).map((s, i) => (
-                <div key={i} className="p-4 rounded-xl bg-[#020617] border border-slate-800">
+              {(results.vulnerabilities[selectedFile] || []).map((s, i) => {
+                const findingKey = `${selectedFile}#${i}`;
+                return (
+                <div key={findingKey} className="p-4 rounded-xl bg-[#020617] border border-slate-800">
                   <div className="flex justify-between items-start mb-4">
                     <div>
                       <span className="px-2 py-1 rounded bg-rose-500/10 text-rose-400 text-[10px] font-bold uppercase tracking-wider border border-rose-500/20">{s.type}</span>
                       <p className="text-xs text-slate-400 mt-3 font-mono">Line: <span className="text-cyan-400">{s.line}</span> • Branch: {s.branch}</p>
                     </div>
-                    <button onClick={() => setRevealSecrets((p) => ({ ...p, [selectedFile]: !p[selectedFile] }))} className="px-3 py-1.5 rounded-lg border border-slate-700 text-[10px] font-bold hover:bg-slate-800 text-white">
-                      {revealSecrets[selectedFile] ? 'Mask Secret' : 'Reveal Secret'}
+                    <button onClick={() => setRevealSecrets((p) => ({ ...p, [findingKey]: !p[findingKey] }))} className="px-3 py-1.5 rounded-lg border border-slate-700 text-[10px] font-bold hover:bg-slate-800 text-white">
+                      {revealSecrets[findingKey] ? 'Mask Secret' : 'Reveal Secret'}
                     </button>
                   </div>
                   
                   <div className="bg-black/50 p-3 rounded-lg border border-slate-800 font-mono text-xs overflow-x-auto text-rose-300">
-                    {revealSecrets[selectedFile] ? s.secret : mask(s.secret)}
+                    {revealSecrets[findingKey] ? s.secret : mask(s.secret)}
                   </div>
 
                   {s.snippet && s.snippet.lines?.length > 0 ? (
@@ -756,7 +771,7 @@ export default function Analysis() {
                       <SourceSnippetView
                         snippet={s.snippet}
                         secret={s.secret}
-                        reveal={!!revealSecrets[selectedFile]}
+                        reveal={!!revealSecrets[findingKey]}
                         fileTitle={selectedFile.split("/").pop()}
                       />
                     </div>
@@ -771,7 +786,8 @@ export default function Analysis() {
                     <p className="font-mono bg-slate-900 px-2 py-1 rounded">{s.commit && s.commit !== "N/A" ? s.commit.substring(0, 12) : "Unknown Commit"}</p>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
