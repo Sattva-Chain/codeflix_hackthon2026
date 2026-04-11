@@ -25,6 +25,9 @@ declare global {
       storeToken: (token: string) => Promise<void>;
       getToken: () => Promise<string | null>;
       clearToken: () => Promise<void>;
+      storeGithubToken: (token: string) => Promise<void>;
+      getGithubToken: () => Promise<string | null>;
+      clearGithubToken: () => Promise<void>;
       savePDF: (data: string, filename: string) => void;
       onSavePDFSuccess: (callback: (args: { message: string; filePath: string }) => void) => void; 
     };
@@ -45,12 +48,37 @@ type Secret = {
   snippet?: CodeSnippet | null;
 };
 
+type RemediationMeta = {
+  sessionId: string;
+  sourceType: "git" | "zip";
+  patchable: boolean;
+  canCommit: boolean;
+  canPush: boolean;
+  repoUrl?: string | null;
+  lastCommitSha?: string | null;
+  lastBranchName?: string | null;
+};
+
+type PatchPreview = {
+  file: string;
+  line: number | string;
+  type: string;
+  secret: string;
+  oldLine?: string;
+  newLine?: string;
+  envName?: string;
+  reference?: string;
+  status: "ready" | "error";
+  reason?: string;
+};
+
 export type ScanResults = {
   summary?: { secretsFound: number; filesWithSecrets: number };
   vulnerabilities?: Record<string, Secret[]>;
   error?: boolean;
   message?: string;
   clean?: boolean;
+  remediation?: RemediationMeta;
 };
 
 // --- Icons ---
@@ -260,6 +288,15 @@ export default function Analysis() {
   const [page, setPage] = useState(1);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [openCodeRowKey, setOpenCodeRowKey] = useState<string | null>(null);
+  const [patchBusyKey, setPatchBusyKey] = useState<string | null>(null);
+  const [patchPreviews, setPatchPreviews] = useState<PatchPreview[]>([]);
+  const [patchDiff, setPatchDiff] = useState<string>("");
+  const [branchName, setBranchName] = useState<string>(() => `secure/fix-secrets-${new Date().toISOString().slice(0, 10)}`);
+  const [commitMessage, setCommitMessage] = useState<string>("fix(secrets): move hardcoded secrets to environment variables");
+  const [githubToken, setGithubToken] = useState<string>("");
+  const [saveGithubToken, setSaveGithubToken] = useState<boolean>(true);
+  const [githubTokenLoaded, setGithubTokenLoaded] = useState<boolean>(false);
+  const [lastCommitSha, setLastCommitSha] = useState<string | null>(null);
   const PAGE_SIZE = 6;
 
   const axiosInstance = axios.create({
@@ -284,6 +321,46 @@ export default function Analysis() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    const loadGithubToken = async () => {
+      if (typeof window === "undefined" || !window.electronAPI?.getGithubToken) {
+        setGithubTokenLoaded(true);
+        return;
+      }
+      const saved = await window.electronAPI.getGithubToken();
+      if (!active) return;
+      if (typeof saved === "string" && saved.trim()) {
+        setGithubToken(saved);
+      }
+      setGithubTokenLoaded(true);
+    };
+    loadGithubToken();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!githubTokenLoaded || typeof window === "undefined") return;
+    if (!window.electronAPI?.storeGithubToken || !window.electronAPI?.clearGithubToken) return;
+
+    const timeoutId = window.setTimeout(async () => {
+      if (!saveGithubToken) {
+        await window.electronAPI.clearGithubToken();
+        return;
+      }
+      const trimmed = githubToken.trim();
+      if (trimmed) {
+        await window.electronAPI.storeGithubToken(trimmed);
+      } else {
+        await window.electronAPI.clearGithubToken();
+      }
+    }, 300);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [githubToken, saveGithubToken, githubTokenLoaded]);
+
+  useEffect(() => {
     setOpenCodeRowKey(null);
   }, [page]);
 
@@ -294,21 +371,26 @@ export default function Analysis() {
     setSelectedFile(null);
     setOpenCodeRowKey(null);
     setToastMessage(null);
+    setPatchBusyKey(null);
+    setPatchPreviews([]);
+    setPatchDiff("");
+    setLastCommitSha(null);
 
     try {
       let response;
       if (scanType === "url") {
         logToConsole(`→ Initiating remote scan for: ${payload.url}`);
-        response = await axiosInstance.post("/scan-url", payload);
+        response = await axiosInstance.post("/scan-url-remediation", payload);
       } else {
         logToConsole("→ Initiating local archive deep scan...");
         const headers = { "Content-Type": "multipart/form-data" } as any;
-        response = await axiosInstance.post("/scan-zip", payload, { headers });
+        response = await axiosInstance.post("/scan-zip-remediation", payload, { headers });
       }
       logToConsole("← Scan engine returned results.");
 
       const scanResults: ScanResults = response.data;
       setResults(scanResults);
+      setLastCommitSha(scanResults.remediation?.lastCommitSha ?? null);
       await sendRepoDetails(scanResults);
 
       const secretsFound = scanResults.summary?.secretsFound ?? 0;
@@ -403,6 +485,153 @@ export default function Analysis() {
       }
     } catch (err: any) {
       logToConsole("❌ Telemetry sync failed: " + (err.message || err));
+    }
+  };
+
+  const patchSessionId = results?.remediation?.sessionId ?? null;
+  const canUsePatchAgent = !!patchSessionId && !results?.error;
+
+  const withRemediationMeta = (nextResults: ScanResults | null, remediation?: RemediationMeta) => {
+    if (!nextResults) return nextResults;
+    return {
+      ...nextResults,
+      remediation: remediation ?? nextResults.remediation,
+    };
+  };
+
+  const buildFindingPayload = (row: { file: string; secret: Secret }) => ({
+    file: row.file,
+    secret: row.secret.secret,
+    type: row.secret.type,
+    line: row.secret.line,
+  });
+
+  const handlePatchPreview = async (applyAll = true) => {
+    if (!patchSessionId) return;
+    setPatchBusyKey("preview");
+    try {
+      logToConsole("→ Generating remediation preview...");
+      const { data } = await axiosInstance.post("/patch/preview", {
+        sessionId: patchSessionId,
+        applyAll,
+      });
+      setPatchPreviews(data.previews ?? []);
+      setResults((prev) => withRemediationMeta(prev, data.remediation));
+      const readyCount = (data.previews ?? []).filter((p: PatchPreview) => p.status === "ready").length;
+      setToastMessage(`Prepared ${readyCount} patch preview${readyCount === 1 ? "" : "s"}.`);
+    } catch (error: any) {
+      const message = error.response?.data?.message || error.message || "Unable to preview patch.";
+      setToastMessage(message);
+      logToConsole(`Error: ${message}`);
+    } finally {
+      setPatchBusyKey(null);
+    }
+  };
+
+  const handlePatchApply = async (row?: { file: string; secret: Secret; findingKey: string }) => {
+    if (!patchSessionId) return;
+    const busyKey = row?.findingKey ?? "all";
+    setPatchBusyKey(busyKey);
+    try {
+      logToConsole(row ? `→ Applying patch for ${row.file}#${row.secret.line}` : "→ Applying remediation to all detected secrets...");
+      const payload = row
+        ? { sessionId: patchSessionId, finding: buildFindingPayload(row) }
+        : { sessionId: patchSessionId, applyAll: true };
+      const { data } = await axiosInstance.post("/patch/apply", payload);
+      setPatchPreviews(data.previews ?? []);
+      setPatchDiff(data.diff ?? "");
+      if (data.results) {
+        setResults(data.results);
+        setLastCommitSha(data.results.remediation?.lastCommitSha ?? null);
+      } else {
+        setResults((prev) => withRemediationMeta(prev, data.remediation));
+      }
+      const changedCount = (data.changedFiles ?? []).length;
+      setToastMessage(changedCount > 0 ? `Patch applied across ${changedCount} file${changedCount === 1 ? "" : "s"}.` : "Patch applied.");
+    } catch (error: any) {
+      const message = error.response?.data?.message || error.message || "Patch failed.";
+      setToastMessage(message);
+      logToConsole(`Error: ${message}`);
+    } finally {
+      setPatchBusyKey(null);
+    }
+  };
+
+  const handleRefreshDiff = async () => {
+    if (!patchSessionId) return;
+    setPatchBusyKey("diff");
+    try {
+      const { data } = await axiosInstance.post("/patch/diff", { sessionId: patchSessionId });
+      setPatchDiff(data.diff ?? "");
+      setResults((prev) => withRemediationMeta(prev, data.remediation));
+      setToastMessage(data.diff ? "Latest remediation diff loaded." : "No uncommitted remediation diff found.");
+    } catch (error: any) {
+      const message = error.response?.data?.message || error.message || "Unable to load diff.";
+      setToastMessage(message);
+      logToConsole(`Error: ${message}`);
+    } finally {
+      setPatchBusyKey(null);
+    }
+  };
+
+  const handleCommitPatch = async (push: boolean) => {
+    if (!patchSessionId) return;
+    if (push && !githubToken.trim()) {
+      setToastMessage("GitHub token is required before pushing a remediation branch.");
+      return;
+    }
+    setPatchBusyKey(push ? "push" : "commit");
+    try {
+      logToConsole(push ? "→ Committing and pushing remediation branch..." : "→ Creating remediation commit...");
+      const { data } = await axiosInstance.post("/patch/commit", {
+        sessionId: patchSessionId,
+        branchName,
+        commitMessage,
+        push,
+        githubToken: githubToken.trim() || undefined,
+      });
+      setPatchDiff(data.diff ?? "");
+      setResults((prev) => withRemediationMeta(prev, data.remediation));
+      const nextSha = data.commit?.commitSha ?? data.remediation?.lastCommitSha ?? null;
+      setLastCommitSha(nextSha);
+      setToastMessage(
+        data.commit?.pushed
+          ? `Branch ${data.commit.branchName} pushed to GitHub.`
+          : `Commit created on ${data.commit?.branchName ?? branchName}.`
+      );
+    } catch (error: any) {
+      const message = error.response?.data?.message || error.message || "Commit failed.";
+      setToastMessage(message);
+      logToConsole(`Error: ${message}`);
+    } finally {
+      setPatchBusyKey(null);
+    }
+  };
+
+  const handleRollbackPatch = async () => {
+    if (!patchSessionId) return;
+    setPatchBusyKey("rollback");
+    try {
+      logToConsole("→ Reverting the last remediation commit...");
+      const { data } = await axiosInstance.post("/patch/rollback", {
+        sessionId: patchSessionId,
+        commitSha: lastCommitSha ?? undefined,
+      });
+      setPatchDiff(data.diff ?? "");
+      setPatchPreviews([]);
+      if (data.results) {
+        setResults(data.results);
+      } else {
+        setResults((prev) => withRemediationMeta(prev, data.remediation));
+      }
+      setLastCommitSha(null);
+      setToastMessage("Remediation rollback commit created.");
+    } catch (error: any) {
+      const message = error.response?.data?.message || error.message || "Rollback failed.";
+      setToastMessage(message);
+      logToConsole(`Error: ${message}`);
+    } finally {
+      setPatchBusyKey(null);
     }
   };
 
@@ -534,6 +763,203 @@ export default function Analysis() {
               <p className="text-emerald-500/80 text-sm mt-0.5">{results.message ?? "Deep layer inspection completed. No exposed secrets found in this codebase."}</p>
             </div>
           </div>
+        )}
+
+        {results?.remediation && !results.error && (
+          <section className="p-6 rounded-[28px] border border-cyan-500/10 bg-[radial-gradient(circle_at_top_left,rgba(6,182,212,0.14),transparent_32%),linear-gradient(180deg,rgba(15,23,42,0.96),rgba(2,6,23,0.98))] shadow-[0_24px_80px_rgba(2,6,23,0.45)] space-y-5">
+            <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm font-bold text-white uppercase tracking-widest">Patch Agent</h3>
+                  <span className="px-2.5 py-1 rounded-full border border-cyan-400/20 bg-cyan-500/10 text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-300">
+                    {results.remediation.sourceType === "git" ? "Live Git Workspace" : "Local ZIP Workspace"}
+                  </span>
+                  <span className={`px-2.5 py-1 rounded-full border text-[10px] font-bold uppercase tracking-[0.22em] ${results.remediation.canPush ? "border-emerald-400/20 bg-emerald-500/10 text-emerald-300" : "border-amber-400/20 bg-amber-500/10 text-amber-300"}`}>
+                    {results.remediation.canPush ? "Push Ready" : "Preview Only"}
+                  </span>
+                </div>
+                <p className="text-sm text-slate-300/90 mt-3 max-w-2xl leading-6">
+                  Review patch previews, apply fixes, then commit or push the remediation branch after approval.
+                </p>
+                <p className="text-[11px] text-slate-500 mt-3 font-mono">
+                  Session: {results.remediation.sessionId} • Source: {results.remediation.sourceType === "git" ? "Git repository" : "ZIP workspace"}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-800/80 bg-black/15 p-2">
+                <button
+                  type="button"
+                  onClick={() => handlePatchPreview(true)}
+                  disabled={!canUsePatchAgent || patchBusyKey !== null}
+                  className="px-4 py-2 rounded-lg border border-slate-700 text-xs font-semibold text-slate-200 hover:border-cyan-500/50 hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {patchBusyKey === "preview" ? "Previewing..." : "Preview All"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePatchApply()}
+                  disabled={!canUsePatchAgent || patchBusyKey !== null}
+                  className="px-4 py-2 rounded-lg bg-cyan-500 text-black text-xs font-bold hover:bg-cyan-400 disabled:opacity-50"
+                >
+                  {patchBusyKey === "all" ? "Patching..." : "Patch All"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRefreshDiff}
+                  disabled={!canUsePatchAgent || patchBusyKey !== null}
+                  className="px-4 py-2 rounded-lg border border-slate-700 text-xs font-semibold text-slate-200 hover:border-cyan-500/50 hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {patchBusyKey === "diff" ? "Loading..." : "Review Diff"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleCommitPatch(false)}
+                  disabled={!results.remediation.canCommit || patchBusyKey !== null}
+                  className="px-4 py-2 rounded-lg border border-emerald-500/40 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
+                >
+                  {patchBusyKey === "commit" ? "Committing..." : "Commit Patch"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleCommitPatch(true)}
+                  disabled={!results.remediation.canPush || patchBusyKey !== null}
+                  className="px-4 py-2 rounded-lg border border-amber-500/40 text-xs font-semibold text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
+                >
+                  {patchBusyKey === "push" ? "Pushing..." : "Commit & Push"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRollbackPatch}
+                  disabled={!results.remediation.canCommit || !lastCommitSha || patchBusyKey !== null}
+                  className="px-4 py-2 rounded-lg border border-rose-500/40 text-xs font-semibold text-rose-300 hover:bg-rose-500/10 disabled:opacity-50"
+                >
+                  {patchBusyKey === "rollback" ? "Rolling Back..." : "Rollback"}
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+              <div className="xl:col-span-2">
+                <label className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block mb-2">Commit Message</label>
+                <input
+                  type="text"
+                  value={commitMessage}
+                  onChange={(e) => setCommitMessage(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl bg-[#020617] border border-slate-700 text-sm text-white outline-none focus:border-cyan-500"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block mb-2">Branch Name</label>
+                <input
+                  type="text"
+                  value={branchName}
+                  onChange={(e) => setBranchName(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl bg-[#020617] border border-slate-700 text-sm text-white outline-none focus:border-cyan-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <div>
+                <label className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block mb-2">GitHub Token For Push</label>
+                <input
+                  type="password"
+                  value={githubToken}
+                  onChange={(e) => setGithubToken(e.target.value)}
+                  placeholder={
+                    results.remediation.canPush
+                      ? githubTokenLoaded
+                        ? "Auto-loaded on this device if previously saved"
+                        : "Loading saved token..."
+                      : "Push disabled for ZIP workspace"
+                  }
+                  className="w-full px-4 py-3 rounded-xl bg-[#020617] border border-slate-700 text-sm text-white outline-none focus:border-cyan-500"
+                  disabled={!results.remediation.canPush}
+                />
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <label className="inline-flex items-center gap-2 text-xs text-slate-400">
+                    <input
+                      type="checkbox"
+                      checked={saveGithubToken}
+                      onChange={(e) => setSaveGithubToken(e.target.checked)}
+                      className="h-4 w-4 rounded border-slate-600 bg-[#020617] text-cyan-500 focus:ring-cyan-500"
+                    />
+                    Save token locally on this device
+                  </label>
+                  {githubToken && (
+                    <button
+                      type="button"
+                      onClick={() => setGithubToken("")}
+                      className="px-3 py-1.5 rounded-lg border border-slate-700 text-[11px] font-semibold text-slate-300 hover:bg-slate-800"
+                    >
+                      Clear token
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-800 bg-[#020617] p-4">
+                <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Remediation Notes</p>
+                <p className="text-sm text-slate-300 mt-3">
+                  The patch agent moves detected hardcoded secrets into environment variables, updates <span className="font-mono text-slate-100">.env.example</span>, and keeps real values out of commits.
+                </p>
+                <p className="text-xs text-slate-500 mt-3">
+                  {results.remediation.canPush
+                    ? "For GitHub pushes, we create a remediation branch and only push after you click the button."
+                    : "ZIP scans support preview/apply only. Commit and push stay disabled because there is no Git remote workspace."}
+                </p>
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Patchable</p>
+                    <p className="text-lg font-semibold text-white mt-2">{results.remediation.patchable ? "Yes" : "No"}</p>
+                  </div>
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Saved Token</p>
+                    <p className={`text-lg font-semibold mt-2 ${githubToken ? "text-emerald-300" : "text-slate-500"}`}>
+                      {githubToken ? "Loaded" : githubTokenLoaded ? "Not saved" : "Checking"}
+                    </p>
+                  </div>
+                </div>
+                {lastCommitSha && (
+                  <p className="text-xs text-emerald-400 mt-3 font-mono">Last remediation commit: {lastCommitSha}</p>
+                )}
+              </div>
+            </div>
+
+            {(patchPreviews.length > 0 || patchDiff) && (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <div className="rounded-xl border border-slate-800 bg-[#020617] p-4 max-h-80 overflow-y-auto">
+                  <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-3">Patch Preview</p>
+                  {patchPreviews.length === 0 ? (
+                    <p className="text-sm text-slate-500">No preview generated yet.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {patchPreviews.map((preview, index) => (
+                        <div key={`${preview.file}-${preview.line}-${index}`} className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-xs font-mono text-cyan-300 break-all">{preview.file}</p>
+                            <span className={`text-[10px] font-bold uppercase ${preview.status === "ready" ? "text-emerald-400" : "text-rose-400"}`}>
+                              {preview.status}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-2">Line {preview.line} • {preview.envName ?? "No env name"}</p>
+                          {preview.oldLine && <p className="text-xs text-rose-300 font-mono mt-3 break-all">- {preview.oldLine}</p>}
+                          {preview.newLine && <p className="text-xs text-emerald-300 font-mono mt-1 break-all">+ {preview.newLine}</p>}
+                          {preview.reason && <p className="text-xs text-rose-400 mt-2">{preview.reason}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-[#020617] p-4 max-h-80 overflow-auto">
+                  <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-3">Current Diff</p>
+                  {patchDiff ? (
+                    <pre className="text-[11px] text-slate-200 font-mono whitespace-pre-wrap break-words">{patchDiff}</pre>
+                  ) : (
+                    <p className="text-sm text-slate-500">No diff loaded yet. Preview or apply a patch first.</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
         )}
 
         {/* Analytics Dashboard */}
@@ -675,6 +1101,14 @@ export default function Analysis() {
                                 </button>
                               </td>
                               <td className="px-4 py-3 flex justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handlePatchApply(r)}
+                                  disabled={!canUsePatchAgent || patchBusyKey !== null}
+                                  className="px-2 py-1 rounded border border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20 text-[10px] text-cyan-300 disabled:opacity-50"
+                                >
+                                  {patchBusyKey === r.findingKey ? "Patching..." : "Patch"}
+                                </button>
                                 <button type="button" onClick={() => setRevealSecrets((p) => ({ ...p, [r.findingKey]: !p[r.findingKey] }))} className="px-2 py-1 rounded border border-slate-700 hover:bg-slate-800 text-[10px] text-slate-300">
                                   {revealSecrets[r.findingKey] ? 'Hide' : 'Reveal'}
                                 </button>

@@ -65,6 +65,20 @@ ipcMain.handle("clear-token", () => {
   return true;
 });
 
+ipcMain.handle("github-token", (event, token) => {
+  store.set("githubToken", token);
+  return true;
+});
+
+ipcMain.handle("get-github-token", () => {
+  return store.get("githubToken");
+});
+
+ipcMain.handle("clear-github-token", () => {
+  store.delete("githubToken");
+  return true;
+});
+
 /* ------------------------------------------------------------------
     📄 PDF SAVE HANDLER
 ------------------------------------------------------------------ */
