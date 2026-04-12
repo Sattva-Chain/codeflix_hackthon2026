@@ -3,6 +3,7 @@ const path = require("path");
 const crypto = require("crypto");
 const util = require("util");
 const { execFile } = require("child_process");
+const { buildPatchPreview } = require("./patchers");
 
 const execFileAsync = util.promisify(execFile);
 const SESSION_TTL_MS = 1000 * 60 * 60;
@@ -267,14 +268,6 @@ function isFrontendFile(filePath) {
   return normalized.includes("/client/") || normalized.startsWith("client/");
 }
 
-function envReferenceFor(filePath, envName) {
-  if (isFrontendFile(filePath)) {
-    const finalName = envName.startsWith("VITE_") ? envName : `VITE_${envName}`;
-    return { envName: finalName, reference: `import.meta.env.${finalName}` };
-  }
-  return { envName, reference: `process.env.${envName}` };
-}
-
 function quoteCandidates(secret) {
   const variants = secretVariants(secret);
   const out = [];
@@ -349,8 +342,18 @@ function previewPatchForFinding(repoRoot, finding) {
   }
 
   const inferredName = inferEnvName({ finding, lineText: oldLine, filePath: finding.file });
-  const { envName, reference } = envReferenceFor(finding.file, inferredName);
-  const newLine = replaceLiteralWithEnv(oldLine, finding.secret, reference);
+  const patch = buildPatchPreview({
+    finding,
+    filePath: finding.file,
+    oldLine,
+    envName: inferredName,
+    fileContent: content,
+    helpers: {
+      isFrontendFile,
+      replaceLiteralWithEnv,
+    },
+  });
+  const { envName, reference, newLine, language, bootstrapKind, reason } = patch;
   if (newLine === oldLine) {
     return {
       ...finding,
@@ -359,8 +362,10 @@ function previewPatchForFinding(repoRoot, finding) {
       newLine,
       envName,
       reference,
+      language,
+      bootstrapKind,
       status: "error",
-      reason: "Patch agent could not rewrite this line safely.",
+      reason: reason || "Patch agent could not rewrite this line safely.",
     };
   }
 
@@ -371,6 +376,8 @@ function previewPatchForFinding(repoRoot, finding) {
     newLine,
     envName,
     reference,
+    language,
+    bootstrapKind,
     status: "ready",
   };
 }
@@ -469,11 +476,62 @@ function ensureDotenvBootstrap(absPath) {
   return true;
 }
 
+function ensurePythonOsImport(absPath) {
+  const content = fs.readFileSync(absPath, "utf8");
+  if (/^\s*import\s+os\b/m.test(content) || /^\s*from\s+os\s+import\b/m.test(content)) return false;
+  fs.writeFileSync(absPath, `import os\n${content}`, "utf8");
+  return true;
+}
+
+function ensureGoOsImport(absPath) {
+  const content = fs.readFileSync(absPath, "utf8");
+  if (/import\s+"os"/m.test(content) || /import\s*\([\s\S]*?"os"[\s\S]*?\)/m.test(content)) return false;
+
+  if (/import\s*\(/m.test(content)) {
+    const updated = content.replace(/import\s*\(/, 'import (\n\t"os"\n');
+    if (updated !== content) {
+      fs.writeFileSync(absPath, updated, "utf8");
+      return true;
+    }
+  }
+
+  if (/import\s+"[^"]+"/m.test(content)) {
+    const updated = content.replace(/import\s+"([^"]+)"/, 'import (\n\t"$1"\n\t"os"\n)');
+    if (updated !== content) {
+      fs.writeFileSync(absPath, updated, "utf8");
+      return true;
+    }
+  }
+
+  if (/^package\s+\w+/m.test(content)) {
+    const updated = content.replace(/^package\s+\w+\s*/m, (match) => `${match}\nimport "os"\n`);
+    if (updated !== content) {
+      fs.writeFileSync(absPath, updated, "utf8");
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function ensureBootstrapForPreview(absPath, preview) {
+  switch (preview?.bootstrapKind) {
+    case "node-dotenv":
+      return ensureDotenvBootstrap(absPath);
+    case "python-os":
+      return ensurePythonOsImport(absPath);
+    case "go-os":
+      return ensureGoOsImport(absPath);
+    default:
+      return false;
+  }
+}
+
 function applyPatches(session, payload = {}) {
   const previews = previewPatches(session, payload);
   const ready = previews.filter((preview) => preview.status === "ready");
   const changedFiles = new Set();
-  const serverFilesNeedingEnv = new Set();
+  const filesNeedingBootstrap = [];
 
   for (const preview of ready) {
     const absPath = resolveRepoFile(session.repoPath, preview.file);
@@ -484,14 +542,15 @@ function applyPatches(session, payload = {}) {
     lines[idx] = preview.newLine;
     fs.writeFileSync(absPath, `${lines.join("\n")}\n`, "utf8");
     changedFiles.add(preview.file);
-    if (!isFrontendFile(preview.file) && !isEnvFile(preview.file) && String(preview.reference).startsWith("process.env.")) {
-      serverFilesNeedingEnv.add(absPath);
+    if (!isEnvFile(preview.file) && preview.bootstrapKind) {
+      filesNeedingBootstrap.push({ absPath, file: preview.file, preview });
     }
   }
 
-  for (const absPath of serverFilesNeedingEnv) {
-    ensureDotenvBootstrap(absPath);
-    changedFiles.add(path.relative(session.repoPath, absPath).replace(/\\/g, "/"));
+  for (const item of filesNeedingBootstrap) {
+    if (ensureBootstrapForPreview(item.absPath, item.preview)) {
+      changedFiles.add(path.relative(session.repoPath, item.absPath).replace(/\\/g, "/"));
+    }
   }
 
   const envNames = ready.map((preview) => preview.envName).filter(Boolean);
