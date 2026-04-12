@@ -108,6 +108,11 @@ type GuardCheck = {
   findings: { file: string; line: number | string; type: string; secret: string }[];
 };
 
+type GuardScripts = {
+  shellScript: string;
+  cmdScript: string;
+};
+
 export type ScanResults = {
   summary?: { secretsFound: number; filesWithSecrets: number };
   vulnerabilities?: Record<string, Secret[]>;
@@ -371,6 +376,8 @@ export default function Analysis() {
   const [lastCommitSha, setLastCommitSha] = useState<string | null>(null);
   const [guardStatus, setGuardStatus] = useState<GuardStatus | null>(null);
   const [guardCheck, setGuardCheck] = useState<GuardCheck | null>(null);
+  const [guardScripts, setGuardScripts] = useState<GuardScripts | null>(null);
+  const [showGuardScripts, setShowGuardScripts] = useState<boolean>(false);
   const PAGE_SIZE = 6;
 
   const axiosInstance = axios.create({
@@ -451,6 +458,8 @@ export default function Analysis() {
     setLastCommitSha(null);
     setGuardStatus(null);
     setGuardCheck(null);
+    setGuardScripts(null);
+    setShowGuardScripts(false);
 
     try {
       let response;
@@ -760,6 +769,25 @@ export default function Analysis() {
       logToConsole(blocked ? "→ Guard check found staged secrets." : "→ Guard check passed.");
     } catch (error: any) {
       const message = normalizeUiError(error.response?.data?.message || error.message || "Unable to check staged changes.");
+      setToastMessage(message);
+      logToConsole(`Error: ${message}`);
+    } finally {
+      setPatchBusyKey(null);
+    }
+  };
+
+  const handleGuardScript = async () => {
+    if (!patchSessionId) return;
+    setPatchBusyKey("guard-script");
+    try {
+      const { data } = await axiosInstance.post("/guard/script", { sessionId: patchSessionId });
+      setGuardStatus(data.guard ?? null);
+      setGuardScripts(data.scripts ?? null);
+      setShowGuardScripts(true);
+      setToastMessage("Pre-commit hook script loaded.");
+      logToConsole("→ Pre-commit hook script loaded.");
+    } catch (error: any) {
+      const message = normalizeUiError(error.response?.data?.message || error.message || "Unable to load guard script.");
       setToastMessage(message);
       logToConsole(`Error: ${message}`);
     } finally {
@@ -1193,6 +1221,12 @@ export default function Analysis() {
                     <p className="text-sm text-slate-300 mt-2 max-w-2xl leading-6">
                       Installs a Git hook in this remediation workspace so commits are blocked if staged secrets are still present.
                     </p>
+                    <div className="mt-3 rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3">
+                      <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold">How It Works</p>
+                      <p className="text-xs text-slate-400 mt-2 leading-5">
+                        The guard is written into the hidden <span className="font-mono text-slate-300">.git/hooks</span> folder of this local remediation workspace. It is a local Git hook, so it will not appear as a normal file in GitHub.
+                      </p>
+                    </div>
                     <div className="mt-3 flex flex-wrap items-center gap-2">
                       <span className={`px-2.5 py-1 rounded-full border text-[10px] font-bold uppercase tracking-[0.18em] ${guardStatus?.installed ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300" : "border-slate-700 bg-slate-950 text-slate-400"}`}>
                         {guardStatus?.installed ? "Installed" : "Not Installed"}
@@ -1221,6 +1255,14 @@ export default function Analysis() {
                     </button>
                     <button
                       type="button"
+                      onClick={handleGuardScript}
+                      disabled={!canUsePatchAgent || patchBusyKey !== null}
+                      className="px-3 py-2 rounded-xl border border-cyan-500/20 text-[11px] font-semibold text-cyan-300 hover:bg-cyan-500/10 disabled:opacity-50"
+                    >
+                      {patchBusyKey === "guard-script" ? "Loading..." : "Show Hook Script"}
+                    </button>
+                    <button
+                      type="button"
                       onClick={handleGuardRemove}
                       disabled={!guardStatus?.installed || patchBusyKey !== null}
                       className="px-3 py-2 rounded-xl border border-rose-500/30 text-[11px] font-semibold text-rose-300 hover:bg-rose-500/10 disabled:opacity-50"
@@ -1242,11 +1284,46 @@ export default function Analysis() {
                       <div className="mt-3 flex flex-col gap-2">
                         {guardCheck.findings.slice(0, 5).map((finding, index) => (
                           <div key={`${finding.file}-${finding.line}-${index}`} className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-300 font-mono">
-                            {finding.file}:{finding.line} [{finding.type}]
+                            <div>{finding.file}:{finding.line} [{finding.type}]</div>
+                            <div className="mt-1 text-rose-300">{mask(finding.secret)}</div>
                           </div>
                         ))}
                       </div>
                     )}
+                  </div>
+                )}
+
+                {showGuardScripts && guardScripts && (
+                  <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/60 p-4 space-y-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500 font-bold">Hook Script</p>
+                        <p className="text-xs text-slate-400 mt-2">
+                          Use this in the real local repo where you commit from terminal. Put it in <span className="font-mono text-slate-300">.git/hooks/pre-commit</span>.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowGuardScripts(false)}
+                        className="px-3 py-2 rounded-xl border border-slate-700 text-[11px] font-semibold text-slate-300 hover:bg-slate-800"
+                      >
+                        Hide Script
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                      <div>
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500 font-bold mb-2">Shell Hook</p>
+                        <pre className="rounded-xl border border-slate-800 bg-[#010616] p-3 text-[11px] text-slate-300 overflow-auto whitespace-pre-wrap break-words font-mono">
+                          {guardScripts.shellScript}
+                        </pre>
+                      </div>
+                      <div>
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500 font-bold mb-2">Windows Hook</p>
+                        <pre className="rounded-xl border border-slate-800 bg-[#010616] p-3 text-[11px] text-slate-300 overflow-auto whitespace-pre-wrap break-words font-mono">
+                          {guardScripts.cmdScript}
+                        </pre>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>

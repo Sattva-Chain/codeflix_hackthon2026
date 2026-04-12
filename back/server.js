@@ -30,6 +30,7 @@ const {
   uninstallGuard,
   getGuardStatus,
   scanStagedChanges,
+  getHookScripts,
 } = require("./services/preCommitGuard");
 
 const execFileAsync = util.promisify(execFile);
@@ -1414,6 +1415,25 @@ app.post("/guard/check", async (req, res) => {
         findingsCount: check.findings.length,
         findings: check.findings,
       },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: sanitizeErrorMessage(err.message) });
+  }
+});
+
+app.post("/guard/script", async (req, res) => {
+  try {
+    const session = getSession(req.body.sessionId);
+    if (!session) return res.status(404).json({ success: false, message: "Patch session not found or expired." });
+    if (session.sourceType !== "git") {
+      return res.status(400).json({ success: false, message: "Pre-commit guard only works for Git repository scans." });
+    }
+    const guard = await getGuardStatus(session.repoPath);
+    const scripts = getHookScripts();
+    return res.json({
+      success: true,
+      guard: { ...guard, supported: true },
+      scripts,
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: sanitizeErrorMessage(err.message) });

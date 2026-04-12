@@ -72,6 +72,10 @@ exit 0
   return { shellScript, cmdScript };
 }
 
+function getHookScripts() {
+  return buildHookScripts();
+}
+
 async function installGuard(repoPath) {
   const root = await getRepoRoot(repoPath);
   const { shPath, cmdPath } = getHookPaths(root);
@@ -303,5 +307,6 @@ module.exports = {
   uninstallGuard,
   getGuardStatus,
   scanStagedChanges,
+  getHookScripts,
   HOOK_MARKER,
 };
