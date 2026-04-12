@@ -12,6 +12,10 @@ const PROVIDER_PATTERNS = [
 	/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\./,
 ];
 
+function normalizeSecret(value) {
+	return String(value || "").trim();
+}
+
 function isDocsOrExample(input) {
 	const haystack = `${input.filePath || ""}\n${input.contextText || ""}\n${input.rawSecret || ""}`.toLowerCase();
 	return /(docs?|readme|example|sample|fixture|mock|test|spec|demo)/.test(haystack);
@@ -28,7 +32,7 @@ function isDatabaseUrlWithPassword(input) {
 }
 
 function hasStrongProviderPrefix(input) {
-	const value = String(input.rawSecret || "").trim();
+	const value = normalizeSecret(input.rawSecret);
 	return PROVIDER_PATTERNS.some((pattern) => pattern.test(value));
 }
 
@@ -43,6 +47,82 @@ function hasSecretAssignmentContext(input) {
 	);
 }
 
+function stripWrappingQuotes(value) {
+	const text = normalizeSecret(value);
+	if (!text) return "";
+	const first = text[0];
+	const last = text[text.length - 1];
+	if ((first === `"` || first === `'` || first === "`") && first === last) {
+		return text.slice(1, -1).trim();
+	}
+	return text;
+}
+
+function isEnvAccessor(value) {
+	return /(?:process\.env\.[A-Za-z_][A-Za-z0-9_]*|process\.env\[[^\]]+\]|os\.getenv\s*\(|System\.getenv\s*\(|env(?:iron)?\s*\[)/.test(
+		normalizeSecret(value),
+	);
+}
+
+function isIdentifierOnly(value) {
+	return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(normalizeSecret(value));
+}
+
+function isReferenceLike(value) {
+	const text = normalizeSecret(value);
+	if (!text) return true;
+	if (isIdentifierOnly(text) || isEnvAccessor(text)) return true;
+	if (/^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]+\])+$/.test(text)) {
+		return true;
+	}
+	return false;
+}
+
+function isIndirectExpression(value) {
+	const text = normalizeSecret(value);
+	if (!text) return true;
+	if (isReferenceLike(text)) return true;
+	if (/^[A-Za-z_$][A-Za-z0-9_$]*\s*\(/.test(text)) return true;
+	if (/[+|]{2}|&&|\|\||\?/.test(text)) return true;
+	if (/\$\{/.test(text)) return true;
+	if (/(?:^|[^A-Za-z0-9_])(?:await|new)\s+[A-Za-z_$]/.test(text)) return true;
+	return false;
+}
+
+function isLikelyPlaceholder(value) {
+	const lower = stripWrappingQuotes(value).toLowerCase();
+	if (!lower) return true;
+	return /(example|sample|dummy|placeholder|redacted|changeme|fake|mock|test(?:ing)?|localhost)/.test(
+		lower,
+	);
+}
+
+function hasLongDenseSecretShape(value) {
+	const text = stripWrappingQuotes(value);
+	if (text.length < 16 || /\s/.test(text)) return false;
+	if (/^[A-Za-z_$][A-Za-z0-9_$-]{0,31}$/.test(text)) return false;
+	const classes = [
+		/[a-z]/.test(text),
+		/[A-Z]/.test(text),
+		/[0-9]/.test(text),
+		/[^A-Za-z0-9]/.test(text),
+	].filter(Boolean).length;
+	if (classes >= 3) return true;
+	if (text.length >= 24 && /^[A-Za-z0-9+/_=-]+$/.test(text)) return true;
+	return false;
+}
+
+function hasLiteralSecretEvidence(input) {
+	const raw = normalizeSecret(input.rawSecret);
+	if (!raw) return false;
+	if (isPrivateKey(input) || isDatabaseUrlWithPassword(input) || hasStrongProviderPrefix(input)) {
+		return true;
+	}
+	if (isLikelyPlaceholder(raw)) return false;
+	if (isReferenceLike(raw) || isIndirectExpression(raw)) return false;
+	return hasLongDenseSecretShape(raw);
+}
+
 function isConfigOrSourcePath(input) {
 	const file = String(input.filePath || "").toLowerCase();
 	return /\.(env|json|ya?ml|toml|ini|conf|config|ts|tsx|js|jsx|py|go|java|rb|php|cs)$/.test(
@@ -51,17 +131,20 @@ function isConfigOrSourcePath(input) {
 }
 
 function scoreConfidence(input) {
-	let score = 35;
+	let score = 8;
+	const literalEvidence = hasLiteralSecretEvidence(input);
 
 	if (hasStrongProviderPrefix(input)) score += 35;
-	if (hasSecretAssignmentContext(input)) score += 20;
+	if (literalEvidence) score += 38;
+	if (hasSecretAssignmentContext(input) && literalEvidence) score += 10;
 	if (isConfigOrSourcePath(input)) score += 10;
 	if (!/entropy/i.test(String(input.secretType || ""))) score += 10;
 	if (typeof input.detectorConfidence === "number") {
 		score += Math.round(Math.max(0, Math.min(1, input.detectorConfidence)) * 10);
 	}
+	if (isReferenceLike(input.rawSecret) || isIndirectExpression(input.rawSecret)) score -= 28;
 	if (isDocsOrExample(input)) score -= 30;
-	if (/redacted|example|dummy|sample|changeme|placeholder/i.test(String(input.rawSecret || ""))) {
+	if (isLikelyPlaceholder(input.rawSecret)) {
 		score -= 25;
 	}
 
@@ -73,9 +156,13 @@ function evaluateSeverity(input, confidence) {
 	if (hasStrongProviderPrefix(input) && isConfigOrSourcePath(input) && !isDocsOrExample(input)) {
 		return "critical";
 	}
+	if (!hasLiteralSecretEvidence(input)) return "low";
 	if (hasStrongProviderPrefix(input) || hasBearerToken(input)) return "high";
 	if (isDocsOrExample(input) || confidence < 35) return "low";
-	if (/entropy/i.test(String(input.secretType || "")) || hasSecretAssignmentContext(input)) {
+	if (
+		confidence >= 70 &&
+		(!/entropy/i.test(String(input.secretType || "")) || hasSecretAssignmentContext(input))
+	) {
 		return "medium";
 	}
 	return "low";
@@ -93,4 +180,11 @@ function scoreFinding(input) {
 
 module.exports = {
 	scoreFinding,
+	hasLiteralSecretEvidence,
+	isReferenceLike,
+	isIndirectExpression,
+	isLikelyPlaceholder,
+	hasStrongProviderPrefix,
+	isDatabaseUrlWithPassword,
+	isPrivateKey,
 };

@@ -1,5 +1,14 @@
 const fs = require("fs");
 const path = require("path");
+const {
+	hasLiteralSecretEvidence,
+	isReferenceLike,
+	isIndirectExpression,
+	isLikelyPlaceholder,
+	hasStrongProviderPrefix,
+	isDatabaseUrlWithPassword,
+	isPrivateKey,
+} = require("./findingScoring");
 
 const SKIP_DIRS = new Set([
 	".git",
@@ -65,13 +74,8 @@ function looksBinary(buffer) {
 function isPlaceholderValue(value) {
 	const normalized = String(value || "").trim().toLowerCase();
 	if (!normalized) return true;
-	if (
-		/^(example|dummy|sample|placeholder|redacted|changeme|test|fake|null|undefined|none)$/i.test(
-			normalized,
-		)
-	) {
-		return true;
-	}
+	if (isLikelyPlaceholder(normalized)) return true;
+	if (/^(null|undefined|none)$/i.test(normalized)) return true;
 	if (/^[x*._-]{6,}$/i.test(normalized)) return true;
 	return false;
 }
@@ -214,31 +218,64 @@ function collectDbUrlFindings(text, relativePath) {
 	return findings;
 }
 
-function shouldSkipAssignmentMatch(relativePath, lineText, value) {
+function hasQuotedLiteralSignal(rawValue, wasQuoted) {
+	if (!wasQuoted) return false;
+	const value = String(rawValue || "").trim();
+	if (!value || isPlaceholderValue(value)) return false;
+	return hasLiteralSecretEvidence({ rawSecret: value });
+}
+
+function shouldSkipAssignmentMatch(relativePath, lineText, variableName, value, wasQuoted) {
 	if (!value || value.length < 8) return true;
 	if (isPlaceholderValue(value)) return true;
 	if (lineSuggestsExample(lineText) && pathSuggestsDocs(relativePath)) return true;
 	if (/^(true|false|null|undefined)$/i.test(String(value).trim())) return true;
-	if (PRIVATE_KEY_HEADER_RE.test(String(value))) return true;
-	DB_URL_RE.lastIndex = 0;
-	if (DB_URL_RE.test(String(value))) return true;
-	for (const pattern of PROVIDER_TOKEN_PATTERNS) {
-		pattern.regex.lastIndex = 0;
-		if (pattern.regex.test(String(value))) return true;
+	if (
+		isPrivateKey({ rawSecret: value }) ||
+		isDatabaseUrlWithPassword({ rawSecret: value }) ||
+		hasStrongProviderPrefix({ rawSecret: value })
+	) {
+		return true;
 	}
-	return false;
+	DB_URL_RE.lastIndex = 0;
+	if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(String(variableName || "").trim()) && isReferenceLike(value)) {
+		return true;
+	}
+	if (isReferenceLike(value) || isIndirectExpression(value)) return true;
+	if (
+		/(?:process\.env\.|process\.env\[|os\.getenv\s*\(|System\.getenv\s*\()/i.test(
+			String(value),
+		)
+	) {
+		return true;
+	}
+	if (!wasQuoted) return true;
+	return !hasQuotedLiteralSignal(value, wasQuoted);
 }
 
 function collectAssignmentFindings(text, relativePath) {
 	const findings = [];
+	const lines = text.split(/\r?\n/);
 	ASSIGNMENT_RE.lastIndex = 0;
 	let match;
 	while ((match = ASSIGNMENT_RE.exec(text)) !== null) {
 		const variableName = String(match[1] || "").trim();
+		const quote = String(match[2] || "");
+		const wasQuoted = Boolean(quote);
 		const rawValue = String(match[3] || "").trim();
 		const line = lineNumberForIndex(text, match.index);
-		const lineText = String(text.split(/\r?\n/)[line - 1] || "");
-		if (shouldSkipAssignmentMatch(relativePath, lineText, rawValue)) continue;
+		const lineText = String(lines[line - 1] || "");
+		if (
+			shouldSkipAssignmentMatch(
+				relativePath,
+				lineText,
+				variableName,
+				rawValue,
+				wasQuoted,
+			)
+		) {
+			continue;
+		}
 		findings.push(
 			buildRawFinding({
 				filePath: relativePath,

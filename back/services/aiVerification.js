@@ -1,5 +1,14 @@
 const http = require("http");
 const https = require("https");
+const {
+	hasLiteralSecretEvidence,
+	isReferenceLike,
+	isIndirectExpression,
+	isLikelyPlaceholder,
+	hasStrongProviderPrefix,
+	isDatabaseUrlWithPassword,
+	isPrivateKey,
+} = require("./findingScoring");
 
 const AI_ANALYZE_URL =
 	process.env.SECURE_SCAN_AI_URL ||
@@ -58,11 +67,37 @@ function buildBackendConfidenceAnalysis(
 	if (!text || text === "Hidden") return null;
 
 	const service = inferServiceFromFinding(finding, text);
-	let confidence = entropyOnly ? 0.62 : 0.9;
-	let risk = entropyOnly ? 0.68 : 0.93;
-	let reason = entropyOnly
-		? "Backend heuristic scored this high-entropy string from detector metadata and secret shape."
-		: "Backend heuristic scored this detector hit as a likely real secret.";
+	const evaluationInput = {
+		rawSecret: text,
+		secretType:
+			finding?.DetectorName ||
+			finding?.detectorName ||
+			finding?.DetectorType ||
+			finding?.detectorType ||
+			"",
+		filePath:
+			finding?.ExtraData?.file ||
+			finding?.extraData?.file ||
+			finding?.SourceMetadata?.Data?.Filesystem?.file ||
+			"",
+		contextText: "",
+	};
+	const deterministic =
+		isPrivateKey(evaluationInput) ||
+		isDatabaseUrlWithPassword(evaluationInput) ||
+		hasStrongProviderPrefix(evaluationInput);
+	const literalEvidence = hasLiteralSecretEvidence(evaluationInput);
+	const ambiguous =
+		!deterministic &&
+		(!literalEvidence || isReferenceLike(text) || isIndirectExpression(text));
+
+	let confidence = deterministic ? 0.97 : literalEvidence ? 0.74 : entropyOnly ? 0.24 : 0.18;
+	let risk = deterministic ? 0.98 : literalEvidence ? 0.78 : entropyOnly ? 0.22 : 0.16;
+	let reason = deterministic
+		? "Backend heuristic matched a deterministic secret exposure pattern."
+		: literalEvidence
+			? "Backend heuristic found literal secret-like evidence, but not a deterministic pattern."
+			: "Backend heuristic found ambiguous secret context without strong literal evidence.";
 
 	if (/^(redis(s)?:\/\/|mongodb(\+srv)?:\/\/)/i.test(text)) {
 		confidence += 0.16;
@@ -76,16 +111,21 @@ function buildBackendConfidenceAnalysis(
 		confidence += 0.18;
 		risk += 0.16;
 		reason = "Backend matched a strong provider-specific secret pattern.";
-	} else if (text.length >= 24) {
+	} else if (literalEvidence && text.length >= 24) {
 		confidence += 0.08;
 		risk += 0.06;
 	}
 
 	const lower = text.toLowerCase();
-	if (/(example|sample|dummy|placeholder|test|localhost)/.test(lower)) {
+	if (isLikelyPlaceholder(lower)) {
 		confidence -= 0.28;
 		risk -= 0.32;
 		reason = "Backend found placeholder-style text, so the score was reduced.";
+	}
+	if (ambiguous) {
+		confidence = Math.min(confidence, entropyOnly ? 0.3 : 0.24);
+		risk = Math.min(risk, entropyOnly ? 0.28 : 0.22);
+		reason = "Backend rejected this as ambiguous because it lacks actual literal secret evidence.";
 	}
 
 	confidence = Math.max(0.15, Math.min(0.99, confidence));
@@ -93,7 +133,7 @@ function buildBackendConfidenceAnalysis(
 
 	return {
 		aiAnalysis: {
-			is_secret: confidence >= 0.55,
+			is_secret: deterministic || (literalEvidence && confidence >= 0.72),
 			risk_score: Number(risk.toFixed(2)),
 			confidence: Number(confidence.toFixed(2)),
 			reason,
@@ -278,7 +318,13 @@ async function enrichFindingsWithVerification(
 			}
 		}
 
-		const shouldDrop = entropyOnly && verification?.aiAnalysis?.is_secret === false;
+		const candidateLooksAmbiguous =
+			isReferenceLike(candidate) ||
+			isIndirectExpression(candidate) ||
+			isLikelyPlaceholder(candidate);
+		const shouldDrop =
+			(entropyOnly && verification?.aiAnalysis?.is_secret === false) ||
+			(candidateLooksAmbiguous && verification?.aiAnalysis?.is_secret !== true);
 		if (shouldDrop) continue;
 
 		enriched.push(

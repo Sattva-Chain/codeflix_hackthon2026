@@ -7,6 +7,12 @@ const { dedupeCanonicalFindings } = require("./findingDeduper");
 const { loadIgnoreConfig, matchIgnoreScope } = require("./findingIgnore");
 const { formatLegacyResults } = require("./findingFormatter");
 const { enrichFindingsWithVerification } = require("./aiVerification");
+const {
+	hasLiteralSecretEvidence,
+	hasStrongProviderPrefix,
+	isDatabaseUrlWithPassword,
+	isPrivateKey,
+} = require("./findingScoring");
 
 const ignorePatterns = [
 	"package-lock.json",
@@ -329,6 +335,44 @@ function shouldDropHighEntropyFalsePositive(f, repoPath) {
 function filterEntropyFalsePositives(findings, repoPath) {
 	if (!findings?.length || !repoPath) return findings;
 	return findings.filter((f) => !shouldDropHighEntropyFalsePositive(f, repoPath));
+}
+
+function isStrongDeterministicFinding(finding) {
+	const input = {
+		rawSecret: finding.rawSecret,
+		filePath: finding.filePath,
+		contextText: "",
+		secretType: finding.secretType,
+	};
+	return (
+		isPrivateKey(input) ||
+		isDatabaseUrlWithPassword(input) ||
+		hasStrongProviderPrefix(input)
+	);
+}
+
+function shouldSurfaceFinding(finding) {
+	if (!finding || finding.ignored) return false;
+	if (finding.severity === "critical") return true;
+	if (isStrongDeterministicFinding(finding)) return true;
+
+	const aiSaysSecret = finding.aiAnalysis?.is_secret === true;
+	const aiConfidence = Number(finding.aiAnalysis?.confidence ?? 0);
+	const literalEvidence = hasLiteralSecretEvidence({
+		rawSecret: finding.rawSecret,
+		filePath: finding.filePath,
+		contextText: "",
+		secretType: finding.secretType,
+	});
+
+	if (aiSaysSecret && literalEvidence) return true;
+	if (literalEvidence && Number(finding.confidence || 0) >= 72) return true;
+	if (literalEvidence && aiConfidence >= 0.78) return true;
+	return false;
+}
+
+function filterSurfacedFindings(findings = []) {
+	return findings.filter((finding) => shouldSurfaceFinding(finding));
 }
 
 function collectNeedleVariants(secret) {
@@ -933,7 +977,12 @@ async function prepareScanResponse(
 		isGitRepo,
 		sourceType,
 	);
-	const formatted = formatLegacyResults(canonicalFindings);
+	const surfacedFindings = filterSurfacedFindings(canonicalFindings);
+	const formatted = formatLegacyResults(surfacedFindings);
+	formatted.internalSummary = {
+		totalCanonicalFindings: canonicalFindings.length,
+		surfacedFindings: surfacedFindings.length,
+	};
 	const nextWarnings = buildScanWarnings(warnings);
 	if (nextWarnings.length) {
 		formatted.warnings = nextWarnings;
