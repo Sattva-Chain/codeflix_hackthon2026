@@ -15,6 +15,7 @@ const {
 	extractZip,
 	cleanupPath,
 	cleanupFile,
+	runGit,
 } = require("./services/scanRuntime");
 const {
 	asScanError,
@@ -31,6 +32,12 @@ const {
 } = require("./services/findingIgnore");
 const { formatLegacyResults } = require("./services/findingFormatter");
 const { executeScanWorkspace: sharedExecuteScanWorkspace } = require("./services/scanPipeline");
+const {
+	installGuard,
+	uninstallGuard,
+	getGuardStatus,
+	scanStagedChanges,
+} = require("./services/preCommitGuard");
 const {
 	createSession,
 	getSession,
@@ -1014,6 +1021,28 @@ async function withRemediationMeta(formatted, session) {
 	};
 }
 
+function withScanMeta(formatted, extraMeta = {}) {
+	const nextAnalyzer = {
+		...(formatted?.scanMeta?.analyzer || {}),
+		...(extraMeta.analyzer || {}),
+	};
+	const nextVerification = extraMeta.verification
+		? {
+				...(formatted?.scanMeta?.verification || {}),
+				...extraMeta.verification,
+			}
+		: formatted?.scanMeta?.verification;
+	return {
+		...formatted,
+		scanMeta: {
+			...(formatted?.scanMeta || {}),
+			...extraMeta,
+			analyzer: nextAnalyzer,
+			...(nextVerification ? { verification: nextVerification } : {}),
+		},
+	};
+}
+
 function sanitizeErrorMessage(value) {
 	if (value == null) return "Unknown error";
 	return String(value)
@@ -1084,6 +1113,86 @@ function withDegradedWarnings(payload, warnings = []) {
 	};
 }
 
+function buildAuthedGithubUrl(repoUrl, token) {
+	const trimmedRepo = String(repoUrl || "").trim();
+	const trimmedToken = String(token || "").trim();
+	if (!trimmedRepo || !trimmedToken) return trimmedRepo;
+	if (/^https:\/\/github\.com\//i.test(trimmedRepo)) {
+		return trimmedRepo.replace(
+			/^https:\/\//i,
+			`https://x-access-token:${encodeURIComponent(trimmedToken)}@`,
+		);
+	}
+	if (/^git@github\.com:/i.test(trimmedRepo)) {
+		const repoPath = trimmedRepo.replace(/^git@github\.com:/i, "");
+		return `https://x-access-token:${encodeURIComponent(trimmedToken)}@github.com/${repoPath}`;
+	}
+	return trimmedRepo;
+}
+
+async function buildFreshRemoteVerificationScan({
+	repoUrl,
+	branchName,
+	githubToken,
+}) {
+	const verificationPath = makeWorkspacePath("verify-remote");
+	const cloneUrl = buildAuthedGithubUrl(repoUrl, githubToken);
+	try {
+		await runGit(["clone", "--depth", "1", "--branch", branchName, cloneUrl, verificationPath]);
+		const { formatted, warnings } = await sharedExecuteScanWorkspace({
+			repoPath: verificationPath,
+			isGitRepo: true,
+			sourceType: "git",
+			scanMeta: {
+				mode: "post-push-verification",
+				sourceKind: "git",
+				repoUrl: repoUrl || null,
+				verification: {
+					performed: true,
+					scannedAt: new Date().toISOString(),
+					branch: branchName || null,
+					source: "fresh-remote-clone",
+				},
+			},
+		});
+		return withDegradedWarnings(formatted, warnings);
+	} finally {
+		cleanupPath(verificationPath);
+	}
+}
+
+async function verifySessionAfterPush(session, githubToken) {
+	const formatted =
+		session.repoUrl && session.lastBranchName
+			? await buildFreshRemoteVerificationScan({
+					repoUrl: session.repoUrl,
+					branchName: session.lastBranchName,
+					githubToken,
+			  })
+			: await (async () => {
+					const { formatted, warnings } = await sharedExecuteScanWorkspace({
+						repoPath: session.repoPath,
+						isGitRepo: session.sourceType === "git",
+						sourceType: session.sourceType,
+						scanMeta: {
+							mode: "post-push-verification",
+							sourceKind: session.sourceType,
+							repoUrl: session.repoUrl || null,
+							verification: {
+								performed: true,
+								scannedAt: new Date().toISOString(),
+								branch: session.lastBranchName || null,
+								source: "workspace-fallback",
+							},
+						},
+					});
+					return withDegradedWarnings(formatted, warnings);
+			  })();
+
+	updateSessionResults(session.sessionId, formatted);
+	return withRemediationMeta(formatted, session);
+}
+
 // ✅ Repo URL Scan
 app.post("/scan-url", async (req, res) => {
 	const repoURL = (req.body.url || "").trim();
@@ -1100,6 +1209,12 @@ app.post("/scan-url", async (req, res) => {
 		const { formatted } = await sharedExecuteScanWorkspace({
 			repoPath: clonePath,
 			isGitRepo: true,
+			sourceType: "git",
+			scanMeta: {
+				mode: "scan",
+				sourceKind: "git",
+				repoUrl: repoURL,
+			},
 		});
 
 		// ✅ Filter ignored files
@@ -1124,6 +1239,12 @@ app.post("/scan-zip", upload.single("zipfile"), async (req, res) => {
 		const { formatted } = await sharedExecuteScanWorkspace({
 			repoPath: extractPath,
 			isGitRepo: false,
+			sourceType: "zip",
+			scanMeta: {
+				mode: "scan",
+				sourceKind: "zip",
+				repoUrl: null,
+			},
 		});
 
 		// ✅ Filter ignored files
@@ -1149,6 +1270,12 @@ app.post("/scan-url-remediation", async (req, res) => {
 		const { formatted, warnings } = await sharedExecuteScanWorkspace({
 			repoPath: clonePath,
 			isGitRepo: true,
+			sourceType: "git",
+			scanMeta: {
+				mode: "scan",
+				sourceKind: "git",
+				repoUrl: repoURL,
+			},
 		});
 		const session = createSession({
 			repoPath: clonePath,
@@ -1185,6 +1312,12 @@ app.post(
 			const { formatted, warnings } = await sharedExecuteScanWorkspace({
 				repoPath: extractPath,
 				isGitRepo: false,
+				sourceType: "zip",
+				scanMeta: {
+					mode: "scan",
+					sourceKind: "zip",
+					repoUrl: null,
+				},
 			});
 			const session = createSession({
 				repoPath: extractPath,
@@ -1240,6 +1373,12 @@ app.post("/finding-ignore", async (req, res) => {
 		const { formatted, warnings } = await sharedExecuteScanWorkspace({
 			repoPath: session.repoPath,
 			isGitRepo: session.sourceType === "git",
+			sourceType: session.sourceType,
+			scanMeta: {
+				mode: "scan",
+				sourceKind: session.sourceType,
+				repoUrl: session.repoUrl || null,
+			},
 		});
 		updateSessionResults(session.sessionId, formatted);
 
@@ -1309,6 +1448,12 @@ app.post("/patch/apply", async (req, res) => {
 		const { formatted, warnings } = await sharedExecuteScanWorkspace({
 			repoPath: session.repoPath,
 			isGitRepo: session.sourceType === "git",
+			sourceType: session.sourceType,
+			scanMeta: {
+				mode: "post-patch-scan",
+				sourceKind: session.sourceType,
+				repoUrl: session.repoUrl || null,
+			},
 		});
 		updateSessionResults(session.sessionId, formatted);
 		const diff = await getGitDiff(session);
@@ -1366,11 +1511,16 @@ app.post("/patch/commit", async (req, res) => {
 				});
 		const commit = await commitSession(session, req.body);
 		const diff = await getGitDiff(session);
+		let results = null;
+		if (req.body.push) {
+			results = await verifySessionAfterPush(session, req.body.githubToken);
+		}
 		return res.json({
 			success: true,
 			commit,
 			diff,
 			remediation: await buildSessionMeta(session),
+			results,
 		});
 	} catch (err) {
 		return res
@@ -1394,6 +1544,12 @@ app.post("/patch/rollback", async (req, res) => {
 		const { formatted, warnings } = await sharedExecuteScanWorkspace({
 			repoPath: session.repoPath,
 			isGitRepo: session.sourceType === "git",
+			sourceType: session.sourceType,
+			scanMeta: {
+				mode: "post-rollback-scan",
+				sourceKind: session.sourceType,
+				repoUrl: session.repoUrl || null,
+			},
 		});
 		updateSessionResults(session.sessionId, formatted);
 		const diff = await getGitDiff(session);
@@ -1406,6 +1562,147 @@ app.post("/patch/rollback", async (req, res) => {
 				await withRemediationMeta(formatted, session),
 				warnings,
 			),
+		});
+	} catch (err) {
+		return res
+			.status(500)
+			.json({ success: false, message: sanitizeErrorMessage(err.message) });
+	}
+});
+
+app.post("/patch/verify", async (req, res) => {
+	try {
+		const session = getSession(req.body.sessionId);
+		if (!session)
+			return res
+				.status(404)
+				.json({
+					success: false,
+					message: "Patch session not found or expired.",
+				});
+		const results = await verifySessionAfterPush(session, req.body.githubToken);
+		return res.json({
+			success: true,
+			remediation: await buildSessionMeta(session),
+			results,
+		});
+	} catch (err) {
+		return res
+			.status(500)
+			.json({ success: false, message: sanitizeErrorMessage(err.message) });
+	}
+});
+
+app.post("/guard/status", async (req, res) => {
+	try {
+		const session = getSession(req.body.sessionId);
+		if (!session)
+			return res
+				.status(404)
+				.json({
+					success: false,
+					message: "Patch session not found or expired.",
+				});
+		if (session.sourceType !== "git") {
+			return res.json({
+				success: true,
+				guard: { installed: false, supported: false },
+			});
+		}
+		const guard = await getGuardStatus(session.repoPath);
+		return res.json({ success: true, guard: { ...guard, supported: true } });
+	} catch (err) {
+		return res
+			.status(500)
+			.json({ success: false, message: sanitizeErrorMessage(err.message) });
+	}
+});
+
+app.post("/guard/install", async (req, res) => {
+	try {
+		const session = getSession(req.body.sessionId);
+		if (!session)
+			return res
+				.status(404)
+				.json({
+					success: false,
+					message: "Patch session not found or expired.",
+				});
+		if (session.sourceType !== "git") {
+			return res
+				.status(400)
+				.json({
+					success: false,
+					message: "Pre-commit guard only works for Git repository scans.",
+				});
+		}
+		const guard = await installGuard(session.repoPath);
+		return res.json({ success: true, guard: { ...guard, supported: true } });
+	} catch (err) {
+		return res
+			.status(500)
+			.json({ success: false, message: sanitizeErrorMessage(err.message) });
+	}
+});
+
+app.post("/guard/remove", async (req, res) => {
+	try {
+		const session = getSession(req.body.sessionId);
+		if (!session)
+			return res
+				.status(404)
+				.json({
+					success: false,
+					message: "Patch session not found or expired.",
+				});
+		if (session.sourceType !== "git") {
+			return res
+				.status(400)
+				.json({
+					success: false,
+					message: "Pre-commit guard only works for Git repository scans.",
+				});
+		}
+		const guard = await uninstallGuard(session.repoPath);
+		return res.json({ success: true, guard: { ...guard, supported: true } });
+	} catch (err) {
+		return res
+			.status(500)
+			.json({ success: false, message: sanitizeErrorMessage(err.message) });
+	}
+});
+
+app.post("/guard/check", async (req, res) => {
+	try {
+		const session = getSession(req.body.sessionId);
+		if (!session)
+			return res
+				.status(404)
+				.json({
+					success: false,
+					message: "Patch session not found or expired.",
+				});
+		if (session.sourceType !== "git") {
+			return res
+				.status(400)
+				.json({
+					success: false,
+					message: "Pre-commit guard only works for Git repository scans.",
+				});
+		}
+		const [guard, check] = await Promise.all([
+			getGuardStatus(session.repoPath),
+			scanStagedChanges(session.repoPath),
+		]);
+		return res.json({
+			success: true,
+			guard: { ...guard, supported: true },
+			check: {
+				blocked: check.blocked,
+				stagedFilesCount: check.stagedFiles.length,
+				findingsCount: check.findings.length,
+				findings: check.findings,
+			},
 		});
 	} catch (err) {
 		return res

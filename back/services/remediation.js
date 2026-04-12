@@ -3,6 +3,7 @@ const path = require("path");
 const crypto = require("crypto");
 const util = require("util");
 const { execFile } = require("child_process");
+const { buildPatchPreview } = require("./patchers");
 
 const execFileAsync = util.promisify(execFile);
 const SESSION_TTL_MS = 1000 * 60 * 60;
@@ -46,6 +47,7 @@ function createSession({ repoPath, sourceType, repoUrl = null, branch = null, re
     lastCommitSha: null,
     lastBranchName: null,
     lastAppliedPatches: [],
+    lastChangedFiles: [],
     lastPreviewCount: 0,
     lastReadyPreviewCount: 0,
     lastAppliedCount: 0,
@@ -85,6 +87,7 @@ function closeSession(sessionId) {
 }
 
 function sessionMeta(session) {
+  const branchFiles = Array.isArray(session.lastChangedFiles) ? session.lastChangedFiles : [];
   return {
     sessionId: session.sessionId,
     sourceType: session.sourceType,
@@ -98,6 +101,8 @@ function sessionMeta(session) {
     lastReadyPreviewCount: session.lastReadyPreviewCount || 0,
     lastAppliedCount: session.lastAppliedCount || 0,
     lastOperation: session.lastOperation || "scan",
+    branchFiles,
+    branchFilesCount: branchFiles.length,
   };
 }
 
@@ -145,10 +150,25 @@ async function getWorkspaceStatus(session) {
 }
 
 async function buildSessionMeta(session) {
+  const workspace = await getWorkspaceStatus(session);
+  const fallbackBranchFiles =
+    workspace.changedFilesCount > 0 ? workspace.changedFiles : sessionMeta(session).branchFiles;
   return {
     ...sessionMeta(session),
-    ...(await getWorkspaceStatus(session)),
+    ...workspace,
+    branchFiles: fallbackBranchFiles,
+    branchFilesCount: fallbackBranchFiles.length,
   };
+}
+
+function parseChangedFilesFromStatus(statusOutput) {
+  return String(statusOutput || "")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .filter((line) => !line.startsWith("##"))
+    .map((line) => line.slice(3).trim())
+    .filter(Boolean)
+    .map((file) => file.replace(/\\/g, "/"));
 }
 
 function listFindingsFromResults(results) {
@@ -271,14 +291,6 @@ function isFrontendFile(filePath) {
   return normalized.includes("/client/") || normalized.startsWith("client/");
 }
 
-function envReferenceFor(filePath, envName) {
-  if (isFrontendFile(filePath)) {
-    const finalName = envName.startsWith("VITE_") ? envName : `VITE_${envName}`;
-    return { envName: finalName, reference: `import.meta.env.${finalName}` };
-  }
-  return { envName, reference: `process.env.${envName}` };
-}
-
 function quoteCandidates(secret) {
   const variants = secretVariants(secret);
   const out = [];
@@ -353,8 +365,18 @@ function previewPatchForFinding(repoRoot, finding) {
   }
 
   const inferredName = inferEnvName({ finding, lineText: oldLine, filePath: finding.file });
-  const { envName, reference } = envReferenceFor(finding.file, inferredName);
-  const newLine = replaceLiteralWithEnv(oldLine, finding.secret, reference);
+  const patch = buildPatchPreview({
+    finding,
+    filePath: finding.file,
+    oldLine,
+    envName: inferredName,
+    fileContent: content,
+    helpers: {
+      isFrontendFile,
+      replaceLiteralWithEnv,
+    },
+  });
+  const { envName, reference, newLine, language, bootstrapKind, reason } = patch;
   if (newLine === oldLine) {
     return {
       ...finding,
@@ -363,8 +385,10 @@ function previewPatchForFinding(repoRoot, finding) {
       newLine,
       envName,
       reference,
+      language,
+      bootstrapKind,
       status: "error",
-      reason: "Patch agent could not rewrite this line safely.",
+      reason: reason || "Patch agent could not rewrite this line safely.",
     };
   }
 
@@ -375,6 +399,8 @@ function previewPatchForFinding(repoRoot, finding) {
     newLine,
     envName,
     reference,
+    language,
+    bootstrapKind,
     status: "ready",
   };
 }
@@ -488,11 +514,62 @@ function ensureDotenvBootstrap(absPath) {
   return true;
 }
 
+function ensurePythonOsImport(absPath) {
+  const content = fs.readFileSync(absPath, "utf8");
+  if (/^\s*import\s+os\b/m.test(content) || /^\s*from\s+os\s+import\b/m.test(content)) return false;
+  fs.writeFileSync(absPath, `import os\n${content}`, "utf8");
+  return true;
+}
+
+function ensureGoOsImport(absPath) {
+  const content = fs.readFileSync(absPath, "utf8");
+  if (/import\s+"os"/m.test(content) || /import\s*\([\s\S]*?"os"[\s\S]*?\)/m.test(content)) return false;
+
+  if (/import\s*\(/m.test(content)) {
+    const updated = content.replace(/import\s*\(/, 'import (\n\t"os"\n');
+    if (updated !== content) {
+      fs.writeFileSync(absPath, updated, "utf8");
+      return true;
+    }
+  }
+
+  if (/import\s+"[^"]+"/m.test(content)) {
+    const updated = content.replace(/import\s+"([^"]+)"/, 'import (\n\t"$1"\n\t"os"\n)');
+    if (updated !== content) {
+      fs.writeFileSync(absPath, updated, "utf8");
+      return true;
+    }
+  }
+
+  if (/^package\s+\w+/m.test(content)) {
+    const updated = content.replace(/^package\s+\w+\s*/m, (match) => `${match}\nimport "os"\n`);
+    if (updated !== content) {
+      fs.writeFileSync(absPath, updated, "utf8");
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function ensureBootstrapForPreview(absPath, preview) {
+  switch (preview?.bootstrapKind) {
+    case "node-dotenv":
+      return ensureDotenvBootstrap(absPath);
+    case "python-os":
+      return ensurePythonOsImport(absPath);
+    case "go-os":
+      return ensureGoOsImport(absPath);
+    default:
+      return false;
+  }
+}
+
 function applyPatches(session, payload = {}) {
   const previews = previewPatches(session, payload);
   const ready = previews.filter((preview) => preview.status === "ready");
   const changedFiles = new Set();
-  const serverFilesNeedingEnv = new Set();
+  const filesNeedingBootstrap = [];
 
   for (const preview of ready) {
     const absPath = resolveRepoFile(session.repoPath, preview.file);
@@ -503,21 +580,25 @@ function applyPatches(session, payload = {}) {
     lines[idx] = preview.newLine;
     fs.writeFileSync(absPath, `${lines.join("\n")}\n`, "utf8");
     changedFiles.add(preview.file);
-    if (!isFrontendFile(preview.file) && !isEnvFile(preview.file) && String(preview.reference).startsWith("process.env.")) {
-      serverFilesNeedingEnv.add(absPath);
+    if (!isEnvFile(preview.file) && preview.bootstrapKind) {
+      filesNeedingBootstrap.push({ absPath, file: preview.file, preview });
     }
   }
 
-  for (const absPath of serverFilesNeedingEnv) {
-    ensureDotenvBootstrap(absPath);
-    changedFiles.add(path.relative(session.repoPath, absPath).replace(/\\/g, "/"));
+  for (const item of filesNeedingBootstrap) {
+    if (ensureBootstrapForPreview(item.absPath, item.preview)) {
+      changedFiles.add(path.relative(session.repoPath, item.absPath).replace(/\\/g, "/"));
+    }
   }
 
   const envNames = ready.map((preview) => preview.envName).filter(Boolean);
-  ensureEnvExample(session.repoPath, envNames);
-  ensureGitIgnore(session.repoPath);
+  const appendedEnvNames = ensureEnvExample(session.repoPath, envNames);
+  const updatedGitIgnore = ensureGitIgnore(session.repoPath);
+  if (appendedEnvNames.length > 0) changedFiles.add(".env.example");
+  if (updatedGitIgnore) changedFiles.add(".gitignore");
 
   session.lastAppliedPatches = previews;
+  session.lastChangedFiles = Array.from(changedFiles);
   session.lastAppliedCount = ready.length;
   session.lastOperation = "apply";
   touchSession(session);
@@ -611,25 +692,33 @@ async function commitSession(session, payload = {}) {
     throw new Error("Commit and push are only available for Git repository scans.");
   }
 
-  const branchName = (payload.branchName || `secure/fix-secrets-${new Date().toISOString().slice(0, 10)}`).trim();
+  const branchName = (payload.branchName || session.lastBranchName || `secure/fix-secrets-${new Date().toISOString().slice(0, 10)}`).trim();
   const commitMessage = (payload.commitMessage || "fix(secrets): move hardcoded secrets to environment variables").trim();
   await ensureGitIdentity(session.repoPath);
 
   const { stdout: statusBefore } = await execFileAsync("git", ["status", "--porcelain"], { cwd: session.repoPath });
-  if (!String(statusBefore || "").trim()) {
+  const hasPendingChanges = !!String(statusBefore || "").trim();
+  const changedFilesBeforeCommit = parseChangedFilesFromStatus(statusBefore);
+  if (!hasPendingChanges && !(payload.push && session.lastCommitSha)) {
     throw new Error("There are no remediation changes to commit yet.");
   }
 
-  await execFileAsync("git", ["checkout", "-B", branchName], { cwd: session.repoPath });
-  await execFileAsync("git", ["add", "--all"], { cwd: session.repoPath });
-  await execFileAsync("git", ["commit", "-m", commitMessage], { cwd: session.repoPath, maxBuffer: 1024 * 1024 * 10 });
+  let commitSha = session.lastCommitSha || null;
+  if (hasPendingChanges) {
+    await execFileAsync("git", ["checkout", "-B", branchName], { cwd: session.repoPath });
+    await execFileAsync("git", ["add", "--all"], { cwd: session.repoPath });
+    await execFileAsync("git", ["commit", "-m", commitMessage], { cwd: session.repoPath, maxBuffer: 1024 * 1024 * 10 });
 
-  const { stdout: shaStdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: session.repoPath });
-  const commitSha = String(shaStdout || "").trim();
-  session.lastCommitSha = commitSha || null;
-  session.lastBranchName = branchName;
-  session.lastOperation = payload.push ? "push" : "commit";
-  touchSession(session);
+    const { stdout: shaStdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: session.repoPath });
+    commitSha = String(shaStdout || "").trim();
+    session.lastCommitSha = commitSha || null;
+    session.lastBranchName = branchName;
+    session.lastChangedFiles = changedFilesBeforeCommit.length > 0 ? changedFilesBeforeCommit : session.lastChangedFiles;
+    session.lastOperation = payload.push ? "push" : "commit";
+    touchSession(session);
+  } else {
+    await execFileAsync("git", ["checkout", branchName], { cwd: session.repoPath });
+  }
 
   let pushed = false;
   if (payload.push) {
@@ -677,6 +766,7 @@ async function rollbackSession(session, payload = {}) {
   const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: session.repoPath });
   const revertSha = String(stdout || "").trim();
   session.lastCommitSha = null;
+  session.lastChangedFiles = [];
   session.lastOperation = "rollback";
   touchSession(session);
   return { revertedCommitSha: targetSha, revertSha };

@@ -6,6 +6,7 @@ const { createCanonicalFinding } = require("./findingContract");
 const { dedupeCanonicalFindings } = require("./findingDeduper");
 const { loadIgnoreConfig, matchIgnoreScope } = require("./findingIgnore");
 const { formatLegacyResults } = require("./findingFormatter");
+const { enrichFindingsWithVerification } = require("./aiVerification");
 
 const ignorePatterns = [
 	"package-lock.json",
@@ -767,6 +768,9 @@ async function buildFindingOccurrences(
 					: typeof f.detectorConfidence === "number"
 						? f.detectorConfidence
 						: null,
+			aiAnalysis: f.ai_analysis || null,
+			aiSource: f.ai_source || null,
+			aiCandidate: f.ai_candidate || null,
 			raw: f,
 			sm,
 		});
@@ -862,6 +866,9 @@ async function buildCanonicalFindings(
 				sanitized: false,
 				persisted: false,
 			},
+			aiAnalysis: occurrence.aiAnalysis,
+			aiSource: occurrence.aiSource,
+			aiCandidate: occurrence.aiCandidate,
 		});
 
 		const ignoreMatch = matchIgnoreScope(finding, ignoreConfig);
@@ -906,6 +913,7 @@ async function prepareScanResponse(
 	isGitRepo,
 	warnings = [],
 	sourceType = null,
+	extraScanMeta = null,
 ) {
 	let normalizedFindings = findings.filter((f) => {
 		const file = getFindingFileKey(f);
@@ -913,9 +921,14 @@ async function prepareScanResponse(
 	});
 
 	normalizedFindings = filterEntropyFalsePositives(normalizedFindings, repoPath);
+	const verification = await enrichFindingsWithVerification(normalizedFindings, {
+		collectSecretNeedles,
+		pickPrimarySecret,
+		detectorIsEntropyOnly,
+	});
 
 	const canonicalFindings = await buildCanonicalFindings(
-		normalizedFindings,
+		verification.findings,
 		repoPath,
 		isGitRepo,
 		sourceType,
@@ -925,10 +938,20 @@ async function prepareScanResponse(
 	if (nextWarnings.length) {
 		formatted.warnings = nextWarnings;
 	}
+	formatted.scanMeta = {
+		scannedAt: new Date().toISOString(),
+		analyzer: verification.meta.analyzer,
+		...(extraScanMeta || {}),
+	};
 	return formatted;
 }
 
-async function executeScanWorkspace({ repoPath, isGitRepo, sourceType = null }) {
+async function executeScanWorkspace({
+	repoPath,
+	isGitRepo,
+	sourceType = null,
+	scanMeta = null,
+}) {
 	const [scanOutput, customFindings] = await Promise.all([
 		runTrufflehog(repoPath),
 		runCustomDetectors(repoPath),
@@ -939,6 +962,7 @@ async function executeScanWorkspace({ repoPath, isGitRepo, sourceType = null }) 
 		isGitRepo,
 		scanOutput.warnings || [],
 		sourceType,
+		scanMeta,
 	);
 	return {
 		formatted,

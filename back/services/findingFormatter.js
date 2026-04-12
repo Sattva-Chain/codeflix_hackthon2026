@@ -40,6 +40,9 @@ function formatLegacyResults(findings = []) {
 					ignoreScope: item.ignoreScope || null,
 				})),
 				git: location.git || finding.git,
+				aiAnalysis: finding.aiAnalysis || null,
+				aiSource: finding.aiSource || null,
+				aiCandidate: finding.aiCandidate || null,
 			});
 			fileSet.add(filePath);
 		}

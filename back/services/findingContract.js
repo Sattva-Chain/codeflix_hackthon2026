@@ -35,6 +35,9 @@ function createCanonicalFinding(input) {
 		storage: input.storage || { sanitized: false, persisted: false },
 		rawSecret: input.rawSecret,
 		normalizedSecretValue,
+		aiAnalysis: input.aiAnalysis || null,
+		aiSource: input.aiSource || null,
+		aiCandidate: input.aiCandidate || null,
 	};
 }
 

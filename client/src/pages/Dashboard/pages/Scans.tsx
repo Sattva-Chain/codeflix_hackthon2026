@@ -62,6 +62,19 @@ type Secret = {
 	ignoreScope?: string | null;
 	locationIndex?: number;
 	snippet?: CodeSnippet | null;
+	aiAnalysis?: {
+		is_secret?: boolean;
+		risk_score?: number;
+		confidence?: number;
+		reason?: string;
+		service?: string;
+		verdict?: string;
+	} | null;
+	aiSource?: string | null;
+	aiCandidate?: {
+		kind?: string;
+		value?: string;
+	} | null;
 	git?: {
 		commit?: string | null;
 		branch?: string | null;
@@ -80,6 +93,17 @@ type RemediationMeta = {
 	repoUrl?: string | null;
 	lastCommitSha?: string | null;
 	lastBranchName?: string | null;
+	lastPreviewCount?: number;
+	lastReadyPreviewCount?: number;
+	lastAppliedCount?: number;
+	lastOperation?: string;
+	currentBranch?: string | null;
+	pendingChanges?: boolean;
+	changedFiles?: string[];
+	changedFilesCount?: number;
+	canCommitNow?: boolean;
+	branchFiles?: string[];
+	branchFilesCount?: number;
 };
 
 type PatchPreview = {
@@ -93,6 +117,22 @@ type PatchPreview = {
 	reference?: string;
 	status: "ready" | "error";
 	reason?: string;
+};
+
+type GuardStatus = {
+	installed: boolean;
+	supported?: boolean;
+	shellHookInstalled?: boolean;
+	cmdHookInstalled?: boolean;
+	hookPath?: string;
+	repoPath?: string;
+};
+
+type GuardCheck = {
+	blocked: boolean;
+	stagedFilesCount: number;
+	findingsCount: number;
+	findings: { file: string; line: number | string; type: string; secret: string }[];
 };
 
 export type ScanResults = {
@@ -111,6 +151,28 @@ export type ScanResults = {
 	storageFindings?: any[];
 	findings?: any[];
 	remediation?: RemediationMeta;
+	scanMeta?: {
+		scannedAt?: string;
+		mode?: string;
+		sourceKind?: string;
+		repoUrl?: string | null;
+		analyzer?: {
+			url?: string;
+			reviewedCount?: number;
+			confirmedCount?: number;
+			rejectedCount?: number;
+			remoteCount?: number;
+			heuristicCount?: number;
+			fallbackUsed?: boolean;
+			note?: string | null;
+		};
+		verification?: {
+			performed?: boolean;
+			scannedAt?: string;
+			branch?: string | null;
+			source?: string;
+		};
+	};
 };
 
 // --- Icons ---
@@ -221,6 +283,33 @@ const formatIgnoreScope = (scope?: string | null) => {
 	if (scope === "local") return "Ignored locally";
 	return `Ignored (${scope})`;
 };
+
+const normalizeUiError = (message: string) => {
+	if (!message) return "Unknown error";
+	return message
+		.replace(
+			/https:\/\/x-access-token:[^@]+@github\.com\//gi,
+			"https://x-access-token:[REDACTED]@github.com/",
+		)
+		.replace(/github_pat_[A-Za-z0-9_]+/g, "github_pat_[REDACTED]");
+};
+
+const stepState = (done: boolean, active: boolean) =>
+	done ? "done" : active ? "active" : "idle";
+
+const formatTimestamp = (value?: string | null) => {
+	if (!value) return "Not available";
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) return "Not available";
+	return date.toLocaleString();
+};
+
+const titleCase = (value?: string | null) =>
+	String(value || "")
+		.split(/[_\s-]+/)
+		.filter(Boolean)
+		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.join(" ");
 
 function SeverityBadge({ severity }: { severity?: string | null }) {
 	const level = normalizeSeverity(severity);
@@ -454,6 +543,9 @@ export default function Analysis() {
 	const [githubToken, setGithubToken] = useState<string>("");
 	const [saveGithubToken, setSaveGithubToken] = useState<boolean>(true);
 	const [githubTokenLoaded, setGithubTokenLoaded] = useState<boolean>(false);
+	const [shipMode, setShipMode] = useState<"commit" | "push">("push");
+	const [guardStatus, setGuardStatus] = useState<GuardStatus | null>(null);
+	const [guardCheck, setGuardCheck] = useState<GuardCheck | null>(null);
 	const [lastCommitSha, setLastCommitSha] = useState<string | null>(null);
 	const PAGE_SIZE = 6;
 
@@ -548,6 +640,8 @@ export default function Analysis() {
 		setPatchBusyKey(null);
 		setPatchPreviews([]);
 		setPatchDiff("");
+		setGuardStatus(null);
+		setGuardCheck(null);
 		setLastCommitSha(null);
 
 		try {
@@ -567,6 +661,12 @@ export default function Analysis() {
 			const scanResults: ScanResults = response.data;
 			setResults(scanResults);
 			setLastCommitSha(scanResults.remediation?.lastCommitSha ?? null);
+			if (
+				scanResults.remediation?.sessionId &&
+				scanResults.remediation?.sourceType === "git"
+			) {
+				await refreshGuardStatus(scanResults.remediation.sessionId);
+			}
 			(scanResults.warnings ?? []).forEach((warning) => {
 				logToConsole(`Warning: ${warning}`);
 			});
@@ -700,6 +800,89 @@ export default function Analysis() {
 
 	const patchSessionId = results?.remediation?.sessionId ?? null;
 	const canUsePatchAgent = !!patchSessionId && !results?.error;
+	const remediation = results?.remediation;
+	const scanMeta = results?.scanMeta;
+	const previewReadyCount = remediation?.lastReadyPreviewCount ?? 0;
+	const appliedCount = remediation?.lastAppliedCount ?? 0;
+	const hasPendingChanges = !!remediation?.pendingChanges;
+	const hasCommittedRemediation =
+		!!remediation?.lastCommitSha || !!lastCommitSha;
+	const canCommitNow = !!remediation?.canCommit && !!remediation?.canCommitNow;
+	const canPushNow =
+		!!remediation?.canPush && (hasPendingChanges || hasCommittedRemediation);
+	const verificationPerformed = !!scanMeta?.verification?.performed;
+	const verificationRemaining = results?.summary?.secretsFound ?? 0;
+	const branchFiles =
+		remediation?.branchFiles?.length
+			? remediation.branchFiles
+			: remediation?.changedFiles ?? [];
+	const branchFilesCount = remediation?.branchFilesCount ?? branchFiles.length;
+	const effectiveShipMode: "commit" | "push" = hasPendingChanges ? shipMode : "push";
+	const aiSummary = useMemo(() => {
+		const scored = flatRows.filter(
+			(row) => row.secret.aiAnalysis?.confidence != null,
+		);
+		const avgConfidence = scored.length
+			? Math.round(
+					(scored.reduce(
+						(sum, row) => sum + (row.secret.aiAnalysis?.confidence ?? 0),
+						0,
+					) /
+						scored.length) *
+						100,
+			  )
+			: 0;
+		return {
+			scoredCount: scored.length,
+			avgConfidence,
+		};
+	}, [flatRows]);
+	const workflowSteps = [
+		{
+			label: "Preview",
+			detail:
+				previewReadyCount > 0
+					? `${previewReadyCount} fixes ready`
+					: "Generate patch suggestions",
+			state: stepState(previewReadyCount > 0, remediation?.lastOperation === "preview"),
+		},
+		{
+			label: "Apply",
+			detail:
+				appliedCount > 0
+					? `${appliedCount} fixes applied`
+					: "Write env-based changes",
+			state: stepState(
+				appliedCount > 0 || hasPendingChanges,
+				remediation?.lastOperation === "apply",
+			),
+		},
+		{
+			label: "Commit",
+			detail: remediation?.lastCommitSha
+				? "Remediation commit created"
+				: hasPendingChanges
+					? "Ready to commit"
+					: "Nothing to commit yet",
+			state: stepState(
+				!!remediation?.lastCommitSha,
+				remediation?.lastOperation === "commit",
+			),
+		},
+		{
+			label: "Push",
+			detail:
+				remediation?.lastOperation === "push"
+					? "Branch pushed"
+					: canPushNow
+						? "Ready to push"
+						: "Needs commit first",
+			state: stepState(
+				remediation?.lastOperation === "push",
+				remediation?.lastOperation === "push",
+			),
+		},
+	];
 
 	const withRemediationMeta = (
 		nextResults: ScanResults | null,
@@ -718,6 +901,12 @@ export default function Analysis() {
 		if (!remaining.length) {
 			setSelectedFile(null);
 		}
+	};
+
+	const refreshGuardStatus = async (sessionId: string) => {
+		const { data } = await axiosInstance.post("/guard/status", { sessionId });
+		setGuardStatus(data.guard ?? null);
+		return data.guard ?? null;
 	};
 
 	const buildFindingPayload = (row: { file: string; secret: Secret }) => ({
@@ -827,8 +1016,94 @@ export default function Analysis() {
 		}
 	};
 
+	const handleGuardInstall = async () => {
+		if (!patchSessionId) return;
+		setPatchBusyKey("guard-install");
+		try {
+			const { data } = await axiosInstance.post("/guard/install", {
+				sessionId: patchSessionId,
+			});
+			setGuardStatus(data.guard ?? null);
+			setToastMessage("Pre-commit guard installed in the current Git workspace.");
+			logToConsole("→ Pre-commit guard installed.");
+		} catch (error: any) {
+			const message = normalizeUiError(
+				error.response?.data?.message ||
+					error.message ||
+					"Unable to install guard.",
+			);
+			setToastMessage(message);
+			logToConsole(`Error: ${message}`);
+		} finally {
+			setPatchBusyKey(null);
+		}
+	};
+
+	const handleGuardRemove = async () => {
+		if (!patchSessionId) return;
+		setPatchBusyKey("guard-remove");
+		try {
+			const { data } = await axiosInstance.post("/guard/remove", {
+				sessionId: patchSessionId,
+			});
+			setGuardStatus(data.guard ?? null);
+			setGuardCheck(null);
+			setToastMessage("Pre-commit guard removed from the current Git workspace.");
+			logToConsole("→ Pre-commit guard removed.");
+		} catch (error: any) {
+			const message = normalizeUiError(
+				error.response?.data?.message ||
+					error.message ||
+					"Unable to remove guard.",
+			);
+			setToastMessage(message);
+			logToConsole(`Error: ${message}`);
+		} finally {
+			setPatchBusyKey(null);
+		}
+	};
+
+	const handleGuardCheck = async () => {
+		if (!patchSessionId) return;
+		setPatchBusyKey("guard-check");
+		try {
+			const { data } = await axiosInstance.post("/guard/check", {
+				sessionId: patchSessionId,
+			});
+			setGuardStatus(data.guard ?? null);
+			setGuardCheck(data.check ?? null);
+			const blocked = !!data.check?.blocked;
+			setToastMessage(
+				blocked
+					? `Pre-commit guard would block this commit. ${data.check?.findingsCount ?? 0} staged secret${data.check?.findingsCount === 1 ? "" : "s"} found.`
+					: "Pre-commit guard check passed. No staged secrets found.",
+			);
+			logToConsole(
+				blocked
+					? "→ Guard check found staged secrets."
+					: "→ Guard check passed.",
+			);
+		} catch (error: any) {
+			const message = normalizeUiError(
+				error.response?.data?.message ||
+					error.message ||
+					"Unable to check staged changes.",
+			);
+			setToastMessage(message);
+			logToConsole(`Error: ${message}`);
+		} finally {
+			setPatchBusyKey(null);
+		}
+	};
+
 	const handleCommitPatch = async (push: boolean) => {
 		if (!patchSessionId) return;
+		if (!hasPendingChanges && !(push && hasCommittedRemediation)) {
+			setToastMessage(
+				"Apply a patch first. There are no remediation changes waiting to be committed.",
+			);
+			return;
+		}
 		if (push && !githubToken.trim()) {
 			setToastMessage(
 				"GitHub token is required before pushing a remediation branch.",
@@ -850,18 +1125,46 @@ export default function Analysis() {
 				githubToken: githubToken.trim() || undefined,
 			});
 			setPatchDiff(data.diff ?? "");
-			setResults((prev) => withRemediationMeta(prev, data.remediation));
+			let nextResults = data.results ?? null;
+			if (push && !nextResults) {
+				logToConsole("→ Push completed. Triggering verification scan...");
+				const verifyResponse = await axiosInstance.post("/patch/verify", {
+					sessionId: patchSessionId,
+					githubToken: githubToken.trim() || undefined,
+				});
+				nextResults = verifyResponse.data?.results ?? null;
+			}
+			if (nextResults) {
+				setResults(nextResults);
+				await sendRepoDetails(nextResults);
+				const remaining = nextResults.summary?.secretsFound ?? 0;
+				logToConsole(
+					remaining === 0
+						? "✓ Post-push verification complete. No secrets remain in the pushed branch."
+						: `⚠ Post-push verification complete. ${remaining} secret${remaining === 1 ? "" : "s"} still remain in the pushed branch.`,
+				);
+			} else {
+				setResults((prev) => withRemediationMeta(prev, data.remediation));
+			}
 			const nextSha =
 				data.commit?.commitSha ?? data.remediation?.lastCommitSha ?? null;
 			setLastCommitSha(nextSha);
 			setToastMessage(
 				data.commit?.pushed
-					? `Branch ${data.commit.branchName} pushed to GitHub.`
+					? (() => {
+							const remaining = nextResults?.summary?.secretsFound ?? null;
+							if (remaining == null)
+								return `Branch ${data.commit.branchName} pushed to GitHub.`;
+							return remaining === 0
+								? `Branch ${data.commit.branchName} pushed. Post-push scan found no remaining secrets.`
+								: `Branch ${data.commit.branchName} pushed. Post-push scan still found ${remaining} secret${remaining === 1 ? "" : "s"}.`;
+					  })()
 					: `Commit created on ${data.commit?.branchName ?? branchName}.`,
 			);
 		} catch (error: any) {
-			const message =
-				error.response?.data?.message || error.message || "Commit failed.";
+			const message = normalizeUiError(
+				error.response?.data?.message || error.message || "Commit failed.",
+			);
 			setToastMessage(message);
 			logToConsole(`Error: ${message}`);
 		} finally {
@@ -1217,22 +1520,22 @@ export default function Analysis() {
 								<button
 									type="button"
 									onClick={() => handleCommitPatch(false)}
-									disabled={
-										!results.remediation.canCommit || patchBusyKey !== null
-									}
+									disabled={!canCommitNow || patchBusyKey !== null}
 									className="px-4 py-2 rounded-lg border border-emerald-500/40 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
 								>
 									{patchBusyKey === "commit" ? "Committing..." : "Commit Patch"}
 								</button>
 								<button
 									type="button"
-									onClick={() => handleCommitPatch(true)}
-									disabled={
-										!results.remediation.canPush || patchBusyKey !== null
-									}
+									onClick={() => handleCommitPatch(effectiveShipMode === "push")}
+									disabled={!canPushNow || patchBusyKey !== null}
 									className="px-4 py-2 rounded-lg border border-amber-500/40 text-xs font-semibold text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
 								>
-									{patchBusyKey === "push" ? "Pushing..." : "Commit & Push"}
+									{patchBusyKey === "push"
+										? "Pushing..."
+										: effectiveShipMode === "push"
+											? "Push & Verify"
+											: "Commit & Push"}
 								</button>
 								<button
 									type="button"
@@ -1246,6 +1549,71 @@ export default function Analysis() {
 								>
 									{patchBusyKey === "rollback" ? "Rolling Back..." : "Rollback"}
 								</button>
+							</div>
+						</div>
+
+						<div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
+							<div className="rounded-2xl border border-slate-800 bg-[#020617] p-4">
+								<p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+									Analyzer
+								</p>
+								<p className="text-lg font-semibold text-white mt-2">
+									{scanMeta?.analyzer?.url ? "Remote + Heuristic" : "Heuristic Only"}
+								</p>
+								<p className="text-xs text-slate-500 mt-2">
+									{scanMeta?.analyzer?.fallbackUsed
+										? "Remote analyzer unavailable. Heuristic verification stayed active."
+										: scanMeta?.analyzer?.url
+											? "Remote verification is configured for candidate review."
+											: "No remote analyzer URL configured for this workspace."}
+								</p>
+							</div>
+							<div className="rounded-2xl border border-slate-800 bg-[#020617] p-4">
+								<p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+									AI Review
+								</p>
+								<p className="text-lg font-semibold text-white mt-2">
+									{aiSummary.scoredCount > 0
+										? `${aiSummary.avgConfidence}% avg confidence`
+										: "No reviewed findings"}
+								</p>
+								<p className="text-xs text-slate-500 mt-2">
+									{aiSummary.scoredCount > 0
+										? `${aiSummary.scoredCount} finding${aiSummary.scoredCount === 1 ? "" : "s"} enriched with analyzer metadata.`
+										: "Results are still shown, but no finding-level analyzer verdicts were attached."}
+								</p>
+							</div>
+							<div className="rounded-2xl border border-slate-800 bg-[#020617] p-4">
+								<p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+									Verification
+								</p>
+								<p className="text-lg font-semibold text-white mt-2">
+									{verificationPerformed ? "Post-push checked" : "Pending push verification"}
+								</p>
+								<p className="text-xs text-slate-500 mt-2">
+									{verificationPerformed
+										? `Verified ${formatTimestamp(scanMeta?.verification?.scannedAt)} via ${scanMeta?.verification?.source ?? "workspace scan"}.`
+										: "A fresh verification scan runs after a remediation push when GitHub access is available."}
+								</p>
+							</div>
+							<div className="rounded-2xl border border-slate-800 bg-[#020617] p-4">
+								<p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+									Workspace State
+								</p>
+								<p className="text-lg font-semibold text-white mt-2">
+									{hasPendingChanges
+										? `${branchFilesCount} file${branchFilesCount === 1 ? "" : "s"} changed`
+										: hasCommittedRemediation
+											? "Committed"
+											: "Clean working tree"}
+								</p>
+								<p className="text-xs text-slate-500 mt-2">
+									{verificationRemaining
+										? "Push the remediation branch to run final verification."
+										: canCommitNow
+											? "Patch changes are ready to commit."
+											: "No uncommitted remediation edits are waiting."}
+								</p>
 							</div>
 						</div>
 
@@ -1276,6 +1644,40 @@ export default function Analysis() {
 
 						<div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
 							<div>
+								<div className="mb-4 rounded-2xl border border-slate-800 bg-[#020617] p-4">
+									<p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+										Ship Mode
+									</p>
+									<div className="mt-3 flex flex-wrap gap-2">
+										<button
+											type="button"
+											onClick={() => setShipMode("commit")}
+											className={`px-3 py-1.5 rounded-lg border text-[11px] font-semibold ${
+												shipMode === "commit"
+													? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+													: "border-slate-700 text-slate-300 hover:bg-slate-800"
+											}`}
+										>
+											Commit First
+										</button>
+										<button
+											type="button"
+											onClick={() => setShipMode("push")}
+											className={`px-3 py-1.5 rounded-lg border text-[11px] font-semibold ${
+												shipMode === "push"
+													? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+													: "border-slate-700 text-slate-300 hover:bg-slate-800"
+											}`}
+										>
+											Push After Fix
+										</button>
+									</div>
+									<p className="text-xs text-slate-500 mt-3">
+										{shipMode === "push"
+											? "After patches are committed, the push action will trigger a verification scan."
+											: "Use commit-first mode to create the remediation commit before deciding whether to push."}
+									</p>
+								</div>
 								<label className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block mb-2">
 									GitHub Token For Push
 								</label>
@@ -1357,6 +1759,159 @@ export default function Analysis() {
 									<p className="text-xs text-emerald-400 mt-3 font-mono">
 										Last remediation commit: {lastCommitSha}
 									</p>
+								)}
+							</div>
+						</div>
+
+						<div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+							<div className="rounded-2xl border border-slate-800 bg-[#020617] p-4">
+								<div className="flex items-center justify-between gap-3">
+									<div>
+										<p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+											Guard Management
+										</p>
+										<p className="text-sm text-slate-300 mt-2">
+											Manage the Secure Scan pre-commit guard in this Git workspace.
+										</p>
+									</div>
+									<span
+										className={`px-2.5 py-1 rounded-full border text-[10px] font-bold uppercase tracking-[0.22em] ${
+											guardStatus?.installed
+												? "border-emerald-400/20 bg-emerald-500/10 text-emerald-300"
+												: "border-slate-700 bg-slate-900 text-slate-400"
+										}`}
+									>
+										{guardStatus?.supported === false
+											? "Unsupported"
+											: guardStatus?.installed
+												? "Installed"
+												: "Not Installed"}
+									</span>
+								</div>
+								<p className="text-xs text-slate-500 mt-3">
+									{guardStatus?.supported === false
+										? "Guard actions are available only for Git repository remediation sessions."
+										: guardStatus?.hookPath
+											? `Hook path: ${guardStatus.hookPath}`
+											: "The guard uses the current staged scan flow and blocks commits when staged secrets remain."}
+								</p>
+								<div className="mt-4 flex flex-wrap gap-2">
+									<button
+										type="button"
+										onClick={handleGuardInstall}
+										disabled={
+											guardStatus?.supported === false || patchBusyKey !== null
+										}
+										className="px-4 py-2 rounded-lg border border-cyan-500/40 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/10 disabled:opacity-50"
+									>
+										{patchBusyKey === "guard-install" ? "Installing..." : "Install Guard"}
+									</button>
+									<button
+										type="button"
+										onClick={handleGuardRemove}
+										disabled={
+											guardStatus?.supported === false || patchBusyKey !== null
+										}
+										className="px-4 py-2 rounded-lg border border-slate-700 text-xs font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+									>
+										{patchBusyKey === "guard-remove" ? "Removing..." : "Remove Guard"}
+									</button>
+									<button
+										type="button"
+										onClick={handleGuardCheck}
+										disabled={
+											guardStatus?.supported === false || patchBusyKey !== null
+										}
+										className="px-4 py-2 rounded-lg border border-amber-500/40 text-xs font-semibold text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
+									>
+										{patchBusyKey === "guard-check" ? "Checking..." : "Check Staged Files"}
+									</button>
+								</div>
+								{guardCheck && (
+									<div className="mt-4 grid grid-cols-3 gap-3">
+										<div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+											<p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+												Guard Result
+											</p>
+											<p
+												className={`text-sm font-semibold mt-2 ${guardCheck.blocked ? "text-rose-300" : "text-emerald-300"}`}
+											>
+												{guardCheck.blocked ? "Would Block" : "Would Pass"}
+											</p>
+										</div>
+										<div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+											<p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+												Staged Files
+											</p>
+											<p className="text-sm font-semibold text-white mt-2">
+												{guardCheck.stagedFilesCount}
+											</p>
+										</div>
+										<div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+											<p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+												Staged Findings
+											</p>
+											<p className="text-sm font-semibold text-white mt-2">
+												{guardCheck.findingsCount}
+											</p>
+										</div>
+									</div>
+								)}
+							</div>
+
+							<div className="rounded-2xl border border-slate-800 bg-[#020617] p-4">
+								<p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+									Workflow Status
+								</p>
+								<div className="mt-4 space-y-3">
+									{workflowSteps.map((step) => (
+										<div
+											key={step.label}
+											className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2"
+										>
+											<div>
+												<p className="text-sm font-semibold text-slate-200">
+													{step.label}
+												</p>
+												<p className="text-[11px] text-slate-500 mt-1">
+													{step.detail}
+												</p>
+											</div>
+											<span
+												className={`text-[10px] font-bold uppercase tracking-[0.22em] ${
+													step.state === "done"
+														? "text-emerald-300"
+														: step.state === "active"
+															? "text-cyan-300"
+															: "text-slate-500"
+												}`}
+											>
+												{step.state}
+											</span>
+										</div>
+									))}
+								</div>
+								{branchFiles.length > 0 && (
+									<div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+										<p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+											Changed Files
+										</p>
+										<div className="mt-3 flex flex-wrap gap-2">
+											{branchFiles.slice(0, 6).map((file) => (
+												<span
+													key={file}
+													className="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-mono text-slate-300"
+												>
+													{file}
+												</span>
+											))}
+											{branchFiles.length > 6 && (
+												<span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-mono text-slate-500">
+													+{branchFiles.length - 6} more
+												</span>
+											)}
+										</div>
+									</div>
 								)}
 							</div>
 						</div>
@@ -1872,6 +2427,11 @@ export default function Analysis() {
 													<span className="inline-flex items-center rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-semibold text-cyan-200">
 														Confidence {formatConfidence(s.confidence)}
 													</span>
+													{s.aiAnalysis ? (
+														<span className="inline-flex items-center rounded-full border border-fuchsia-500/20 bg-fuchsia-500/10 px-2 py-0.5 text-[10px] font-semibold text-fuchsia-200">
+															AI {Math.round((s.aiAnalysis.confidence ?? 0) * 100)}%
+														</span>
+													) : null}
 													{s.ignored ? (
 														<span className="inline-flex items-center rounded-full border border-slate-600 bg-slate-800/80 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
 															{formatIgnoreScope(s.ignoreScope)}
@@ -1915,6 +2475,29 @@ export default function Analysis() {
 										<div className="bg-black/50 p-3 rounded-lg border border-slate-800 font-mono text-xs overflow-x-auto text-rose-300">
 											{revealSecrets[findingKey] ? s.secret : mask(s.secret)}
 										</div>
+
+										{s.aiAnalysis && (
+											<div className="mt-4 rounded-xl border border-fuchsia-500/20 bg-fuchsia-500/5 p-4">
+												<div className="flex flex-wrap items-center gap-2">
+													<span className="inline-flex items-center rounded-full border border-fuchsia-500/20 bg-fuchsia-500/10 px-2 py-0.5 text-[10px] font-semibold text-fuchsia-200">
+														{titleCase(s.aiAnalysis.verdict)} via {s.aiSource ?? "heuristic"}
+													</span>
+													<span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
+														Confidence {Math.round((s.aiAnalysis.confidence ?? 0) * 100)}%
+													</span>
+													{s.aiCandidate?.kind ? (
+														<span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
+															Primary {s.aiCandidate.kind}
+														</span>
+													) : null}
+												</div>
+												{s.aiAnalysis.reason ? (
+													<p className="text-xs text-slate-300 mt-3 leading-6">
+														{s.aiAnalysis.reason}
+													</p>
+												) : null}
+											</div>
+										)}
 
 										{s.snippet && s.snippet.lines?.length > 0 ? (
 											<div className="mt-4">
