@@ -92,6 +92,22 @@ type PatchPreview = {
   reason?: string;
 };
 
+type GuardStatus = {
+  installed: boolean;
+  supported?: boolean;
+  shellHookInstalled?: boolean;
+  cmdHookInstalled?: boolean;
+  hookPath?: string;
+  repoPath?: string;
+};
+
+type GuardCheck = {
+  blocked: boolean;
+  stagedFilesCount: number;
+  findingsCount: number;
+  findings: { file: string; line: number | string; type: string; secret: string }[];
+};
+
 export type ScanResults = {
   summary?: { secretsFound: number; filesWithSecrets: number };
   vulnerabilities?: Record<string, Secret[]>;
@@ -353,6 +369,8 @@ export default function Analysis() {
   const [showShipAdvanced, setShowShipAdvanced] = useState<boolean>(false);
   const [shipMode, setShipMode] = useState<"commit" | "push">("push");
   const [lastCommitSha, setLastCommitSha] = useState<string | null>(null);
+  const [guardStatus, setGuardStatus] = useState<GuardStatus | null>(null);
+  const [guardCheck, setGuardCheck] = useState<GuardCheck | null>(null);
   const PAGE_SIZE = 6;
 
   const axiosInstance = axios.create({
@@ -431,6 +449,8 @@ export default function Analysis() {
     setPatchPreviews([]);
     setPatchDiff("");
     setLastCommitSha(null);
+    setGuardStatus(null);
+    setGuardCheck(null);
 
     try {
       let response;
@@ -447,6 +467,9 @@ export default function Analysis() {
       const scanResults: ScanResults = response.data;
       setResults(scanResults);
       setLastCommitSha(scanResults.remediation?.lastCommitSha ?? null);
+      if (scanResults.remediation?.sessionId && scanResults.remediation?.sourceType === "git") {
+        await refreshGuardStatus(scanResults.remediation.sessionId);
+      }
       await sendRepoDetails(scanResults);
 
       const secretsFound = scanResults.summary?.secretsFound ?? 0;
@@ -612,6 +635,12 @@ export default function Analysis() {
     line: row.secret.line,
   });
 
+  const refreshGuardStatus = async (sessionId: string) => {
+    const { data } = await axiosInstance.post("/guard/status", { sessionId });
+    setGuardStatus(data.guard ?? null);
+    return data.guard ?? null;
+  };
+
   const handlePatchPreview = async (applyAll = true) => {
     if (!patchSessionId) return;
     setPatchBusyKey("preview");
@@ -673,6 +702,64 @@ export default function Analysis() {
       setToastMessage(data.diff ? "Latest remediation diff loaded." : "No uncommitted remediation diff found.");
     } catch (error: any) {
       const message = normalizeUiError(error.response?.data?.message || error.message || "Unable to load diff.");
+      setToastMessage(message);
+      logToConsole(`Error: ${message}`);
+    } finally {
+      setPatchBusyKey(null);
+    }
+  };
+
+  const handleGuardInstall = async () => {
+    if (!patchSessionId) return;
+    setPatchBusyKey("guard-install");
+    try {
+      const { data } = await axiosInstance.post("/guard/install", { sessionId: patchSessionId });
+      setGuardStatus(data.guard ?? null);
+      setToastMessage("Pre-commit guard installed in the current Git workspace.");
+      logToConsole("→ Pre-commit guard installed.");
+    } catch (error: any) {
+      const message = normalizeUiError(error.response?.data?.message || error.message || "Unable to install guard.");
+      setToastMessage(message);
+      logToConsole(`Error: ${message}`);
+    } finally {
+      setPatchBusyKey(null);
+    }
+  };
+
+  const handleGuardRemove = async () => {
+    if (!patchSessionId) return;
+    setPatchBusyKey("guard-remove");
+    try {
+      const { data } = await axiosInstance.post("/guard/remove", { sessionId: patchSessionId });
+      setGuardStatus(data.guard ?? null);
+      setGuardCheck(null);
+      setToastMessage("Pre-commit guard removed from the current Git workspace.");
+      logToConsole("→ Pre-commit guard removed.");
+    } catch (error: any) {
+      const message = normalizeUiError(error.response?.data?.message || error.message || "Unable to remove guard.");
+      setToastMessage(message);
+      logToConsole(`Error: ${message}`);
+    } finally {
+      setPatchBusyKey(null);
+    }
+  };
+
+  const handleGuardCheck = async () => {
+    if (!patchSessionId) return;
+    setPatchBusyKey("guard-check");
+    try {
+      const { data } = await axiosInstance.post("/guard/check", { sessionId: patchSessionId });
+      setGuardStatus(data.guard ?? null);
+      setGuardCheck(data.check ?? null);
+      const blocked = !!data.check?.blocked;
+      setToastMessage(
+        blocked
+          ? `Pre-commit guard would block this commit. ${data.check?.findingsCount ?? 0} staged secret${data.check?.findingsCount === 1 ? "" : "s"} found.`
+          : "Pre-commit guard check passed. No staged secrets found."
+      );
+      logToConsole(blocked ? "→ Guard check found staged secrets." : "→ Guard check passed.");
+    } catch (error: any) {
+      const message = normalizeUiError(error.response?.data?.message || error.message || "Unable to check staged changes.");
       setToastMessage(message);
       logToConsole(`Error: ${message}`);
     } finally {
@@ -1095,6 +1182,73 @@ export default function Analysis() {
                     </span>
                   )}
                 </div>
+              </div>
+            )}
+
+            {results.remediation.sourceType === "git" && (
+              <div className="rounded-2xl border border-slate-800 bg-[#020617] p-4">
+                <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500 font-bold">Pre-Commit Secret Guard</p>
+                    <p className="text-sm text-slate-300 mt-2 max-w-2xl leading-6">
+                      Installs a Git hook in this remediation workspace so commits are blocked if staged secrets are still present.
+                    </p>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <span className={`px-2.5 py-1 rounded-full border text-[10px] font-bold uppercase tracking-[0.18em] ${guardStatus?.installed ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300" : "border-slate-700 bg-slate-950 text-slate-400"}`}>
+                        {guardStatus?.installed ? "Installed" : "Not Installed"}
+                      </span>
+                      {guardStatus?.hookPath && (
+                        <span className="text-[11px] text-slate-500 font-mono break-all">{guardStatus.hookPath}</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleGuardInstall}
+                      disabled={!canUsePatchAgent || patchBusyKey !== null}
+                      className="px-3 py-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-[11px] font-semibold text-emerald-300 hover:bg-emerald-500/15 disabled:opacity-50"
+                    >
+                      {patchBusyKey === "guard-install" ? "Installing..." : "Install Guard"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleGuardCheck}
+                      disabled={!canUsePatchAgent || patchBusyKey !== null}
+                      className="px-3 py-2 rounded-xl border border-slate-700 text-[11px] font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                    >
+                      {patchBusyKey === "guard-check" ? "Checking..." : "Check Staged Changes"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleGuardRemove}
+                      disabled={!guardStatus?.installed || patchBusyKey !== null}
+                      className="px-3 py-2 rounded-xl border border-rose-500/30 text-[11px] font-semibold text-rose-300 hover:bg-rose-500/10 disabled:opacity-50"
+                    >
+                      {patchBusyKey === "guard-remove" ? "Removing..." : "Remove Guard"}
+                    </button>
+                  </div>
+                </div>
+
+                {guardCheck && (
+                  <div className={`mt-4 rounded-2xl border p-4 ${guardCheck.blocked ? "border-rose-500/20 bg-rose-500/8" : "border-emerald-500/20 bg-emerald-500/8"}`}>
+                    <p className={`text-[10px] uppercase tracking-[0.22em] font-bold ${guardCheck.blocked ? "text-rose-300" : "text-emerald-300"}`}>
+                      {guardCheck.blocked ? "Commit Would Be Blocked" : "Commit Would Be Allowed"}
+                    </p>
+                    <p className="text-sm text-slate-300 mt-2">
+                      {guardCheck.stagedFilesCount} staged file{guardCheck.stagedFilesCount === 1 ? "" : "s"} checked, {guardCheck.findingsCount} secret{guardCheck.findingsCount === 1 ? "" : "s"} found.
+                    </p>
+                    {guardCheck.findings.length > 0 && (
+                      <div className="mt-3 flex flex-col gap-2">
+                        {guardCheck.findings.slice(0, 5).map((finding, index) => (
+                          <div key={`${finding.file}-${finding.line}-${index}`} className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-300 font-mono">
+                            {finding.file}:{finding.line} [{finding.type}]
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
