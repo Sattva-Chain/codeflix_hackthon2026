@@ -125,6 +125,28 @@ const trustPoints = [
   "Turns raw secret detection into visible, accountable remediation work",
 ];
 
+const heroQuickWins = [
+  {
+    title: "Git-aware attribution",
+    description: "Author, email, commit time, and patch ownership stay attached to each finding.",
+  },
+  {
+    title: "Task automation",
+    description: "Asana, email delivery, and due dates move with the remediation workflow.",
+  },
+  {
+    title: "Team visibility",
+    description: "Owners, employees, and solo developers work from one shared security surface.",
+  },
+];
+
+const commandRail = [
+  ["Task automation", "Asana, due date, and ownership sync"],
+  ["Assign Task", "Create remediation work instantly"],
+  ["Notify Developer", "Deliver repo-aware email context"],
+  ["Track Fix", "Verify remediation inside dashboard"],
+];
+
 function SectionHeading({
   eyebrow,
   title,
@@ -167,11 +189,7 @@ const Home: React.FC = () => {
       <div className="relative z-10">
         <header className="sticky top-0 z-30 border-b border-white/6 bg-[#06080d]/78 backdrop-blur-xl">
           <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-5 py-4 sm:px-6 lg:px-8">
-            <button
-              type="button"
-              onClick={() => navigate("/")}
-              className="flex items-center gap-3 text-left"
-            >
+            <button type="button" onClick={() => navigate("/")} className="flex items-center gap-3 text-left">
               <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-blue-400/20 bg-zinc-900/90 shadow-[0_0_30px_rgba(37,99,235,0.18)]">
                 <img
                   src="/Gemini_Generated_Image_3pferw3pferw3pfe-removebg-preview.png"
@@ -237,143 +255,136 @@ const Home: React.FC = () => {
 
         <main>
           <section id="home" className="mx-auto max-w-7xl px-5 pb-20 pt-14 sm:px-6 lg:px-8 lg:pb-28 lg:pt-20">
-            <div className="grid gap-10 lg:grid-cols-[1.08fr_0.92fr] lg:items-center">
-              <div>
-                <div className="inline-flex items-center gap-2 rounded-full border border-blue-400/15 bg-blue-500/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.24em] text-blue-200">
-                  <Sparkles size={14} />
-                  Developer-first remediation platform
-                </div>
-
-                <h1 className="mt-8 max-w-4xl text-4xl font-semibold leading-[1.02] tracking-tight text-white sm:text-6xl xl:text-7xl">
-                  Detect exposed secrets.
-                  <span className="block text-zinc-300">Assign fixes fast.</span>
-                  <span className="relative inline-block text-white">
-                    Track every remediation.
-                    <span className="absolute -bottom-2 left-0 h-px w-full bg-gradient-to-r from-blue-400/0 via-blue-300/80 to-cyan-300/0" />
-                  </span>
-                </h1>
-
-                <p className="mt-7 max-w-2xl text-base leading-8 text-zinc-400 sm:text-lg">
-                  SecureScan helps engineering teams detect API key exposure, enrich findings with developer attribution,
-                  launch remediation tasks through Asana, notify owners by email, and verify fixes from one premium dashboard.
-                </p>
-
-                <div className="mt-9 flex flex-wrap items-center gap-4">
-                  <button
-                    type="button"
-                    onClick={signedIn ? openDashboard : openSignIn}
-                    className="inline-flex items-center gap-2 rounded-full bg-blue-600 px-6 py-3.5 text-sm font-semibold text-white shadow-[0_12px_40px_rgba(37,99,235,0.28)] transition hover:bg-blue-500"
-                  >
-                    {signedIn ? "Go to Dashboard" : "Get Started"}
-                    <ArrowRight size={17} />
-                  </button>
-                  <a
-                    href="#demo"
-                    className="inline-flex items-center gap-2 rounded-full border border-zinc-700 bg-zinc-900/80 px-6 py-3.5 text-sm font-semibold text-zinc-200 transition hover:border-zinc-500 hover:text-white"
-                  >
-                    <PlayCircle size={18} />
-                    Watch Demo
-                  </a>
-                </div>
-
-                <div className="mt-10 grid gap-3 sm:grid-cols-3">
-                  {[
-                    ["Git-aware attribution", "Author, email, commit time, and patch ownership"],
-                    ["Task automation", "Asana, email delivery, and workflow status"],
-                    ["Team visibility", "Owners, employees, and solo developers in one flow"],
-                  ].map(([title, subtitle]) => (
-                    <div key={title} className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4 backdrop-blur-sm">
-                      <p className="text-sm font-semibold text-white">{title}</p>
-                      <p className="mt-2 text-xs leading-6 text-zinc-500">{subtitle}</p>
-                    </div>
-                  ))}
-                </div>
+            <div className="mx-auto max-w-5xl text-center">
+              <div className="inline-flex items-center gap-2 rounded-full border border-blue-400/15 bg-blue-500/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.24em] text-blue-200">
+                <Sparkles size={14} />
+                Developer-first remediation platform
               </div>
 
-              <div className="relative">
-                <div className="absolute -left-6 top-8 hidden h-32 w-32 rounded-full bg-cyan-400/10 blur-3xl lg:block" />
-                <div className="absolute -right-8 bottom-12 hidden h-36 w-36 rounded-full bg-blue-600/12 blur-3xl lg:block" />
+              <h1 className="mt-8 text-4xl font-semibold leading-[0.98] tracking-tight text-white sm:text-6xl xl:text-[5.5rem]">
+                Detect exposed secrets.
+                <span className="block text-zinc-300">Assign fixes fast.</span>
+                <span className="block text-white">Track every remediation.</span>
+              </h1>
 
-                <div className="relative overflow-hidden rounded-[2rem] border border-white/10 bg-zinc-950/80 p-4 shadow-[0_30px_120px_rgba(0,0,0,0.45)] backdrop-blur">
-                  <div className="rounded-[1.6rem] border border-white/8 bg-[linear-gradient(180deg,rgba(24,24,27,0.95),rgba(10,12,18,0.95))] p-5">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <p className="text-[11px] uppercase tracking-[0.24em] text-blue-300/75">Live workflow preview</p>
-                        <h3 className="mt-2 text-lg font-semibold text-white">Detection to remediation in one surface</h3>
+              <p className="mx-auto mt-8 max-w-3xl text-base leading-8 text-zinc-400 sm:text-xl">
+                SecureScan helps engineering teams detect API key exposure, enrich findings with developer attribution,
+                launch remediation tasks through Asana, notify owners by email, and verify fixes from one premium dashboard.
+              </p>
+
+              <div className="mt-10 flex flex-wrap items-center justify-center gap-4">
+                <button
+                  type="button"
+                  onClick={signedIn ? openDashboard : openSignIn}
+                  className="inline-flex items-center gap-2 rounded-full bg-blue-600 px-6 py-3.5 text-sm font-semibold text-white shadow-[0_12px_40px_rgba(37,99,235,0.28)] transition hover:bg-blue-500"
+                >
+                  {signedIn ? "Go to Dashboard" : "Get Started"}
+                  <ArrowRight size={17} />
+                </button>
+                <a
+                  href="#demo"
+                  className="inline-flex items-center gap-2 rounded-full border border-zinc-700 bg-zinc-900/80 px-6 py-3.5 text-sm font-semibold text-zinc-200 transition hover:border-zinc-500 hover:text-white"
+                >
+                  <PlayCircle size={18} />
+                  Watch Demo
+                </a>
+              </div>
+
+              <div className="mx-auto mt-12 grid max-w-4xl gap-3 sm:grid-cols-3">
+                {heroQuickWins.map((item) => (
+                  <div key={item.title} className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4 backdrop-blur-sm text-left">
+                    <p className="text-sm font-semibold text-white">{item.title}</p>
+                    <p className="mt-2 text-xs leading-6 text-zinc-500">{item.description}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-16">
+              <div className="rounded-[2rem] border border-white/8 bg-[linear-gradient(180deg,rgba(13,17,26,0.95),rgba(7,10,17,0.98))] p-3 shadow-[0_30px_120px_rgba(0,0,0,0.42)]">
+                <div className="rounded-[1.7rem] border border-white/8 bg-zinc-950/85 p-4">
+                  <div className="mx-auto max-w-6xl">
+                    <div className="flex items-center justify-between gap-4 rounded-[1.2rem] border border-white/8 bg-white/[0.03] px-5 py-3">
+                      <div className="flex items-center gap-2">
+                        <span className="h-3 w-3 rounded-full bg-rose-400/90" />
+                        <span className="h-3 w-3 rounded-full bg-amber-300/90" />
+                        <span className="h-3 w-3 rounded-full bg-emerald-400/90" />
                       </div>
-                      <div className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-300">
-                        Patch Ready
+                      <div className="flex-1 px-4">
+                        <div className="mx-auto max-w-3xl rounded-full border border-white/8 bg-zinc-900/90 px-4 py-2 text-center text-xs text-zinc-500">
+                          secureScan workflow preview · detection · tasking · notification · verification
+                        </div>
                       </div>
+                      <div className="hidden text-xs text-zinc-500 md:block">Live product surface</div>
                     </div>
 
-                    <div className="mt-5 grid gap-4 sm:grid-cols-[1fr_0.92fr]">
-                      <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                        <div className="flex items-center justify-between text-xs text-zinc-500">
-                          <span>SecureScan cockpit</span>
-                          <span>Repo analysis</span>
-                        </div>
-                        <div className="mt-4 space-y-3">
-                          <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 p-3">
-                            <p className="text-xs uppercase tracking-[0.18em] text-rose-200/80">Exposed credential</p>
-                            <p className="mt-2 text-sm font-medium text-white">mobile_price_prediction/predict.py · line 13</p>
-                            <p className="mt-2 text-xs text-zinc-300">High entropy token detected, attributed to commit metadata, and ready for remediation assignment.</p>
-                          </div>
-                          <div className="grid grid-cols-2 gap-3">
-                            <div className="rounded-xl border border-white/8 bg-zinc-900/80 p-3">
-                              <p className="text-xs uppercase tracking-[0.18em] text-zinc-500">Assignee</p>
-                              <p className="mt-2 text-sm text-white">dev@team.com</p>
-                            </div>
-                            <div className="rounded-xl border border-white/8 bg-zinc-900/80 p-3">
-                              <p className="text-xs uppercase tracking-[0.18em] text-zinc-500">Due date</p>
-                              <p className="mt-2 text-sm text-white">48-hour SLA</p>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
+                    <div className="mt-4 rounded-[1.4rem] border border-white/8 bg-[linear-gradient(180deg,rgba(17,24,39,0.74),rgba(9,12,18,0.92))] p-6">
+                      <div className="grid gap-6 xl:grid-cols-[0.86fr_1.14fr]">
+                        <div className="rounded-[1.4rem] border border-white/8 bg-white/[0.03] p-5">
+                          <p className="text-[11px] uppercase tracking-[0.22em] text-blue-300/75">Workspace preview</p>
+                          <h3 className="mt-3 text-2xl font-semibold leading-tight text-white sm:text-3xl">
+                            Detect repository leaks. Trigger remediation. Verify fixes.
+                          </h3>
+                          <p className="mt-4 text-sm leading-7 text-zinc-400">
+                            SecureScan turns secret detection into an accountable workflow with author attribution, task assignment,
+                            delivery notifications, and visible remediation tracking.
+                          </p>
 
-                      <div className="space-y-4">
-                        <div className="rounded-2xl border border-blue-400/15 bg-blue-500/10 p-4">
-                          <div className="flex items-center gap-3">
-                            <div className="rounded-xl bg-blue-500/15 p-2 text-blue-300">
-                              <Workflow size={18} />
+                          <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                            <div className="rounded-2xl border border-white/8 bg-zinc-950/80 p-4">
+                              <p className="text-sm font-semibold text-white">Git blame attribution</p>
+                              <p className="mt-2 text-xs leading-6 text-zinc-500">Author, email, commit, and patch owner.</p>
                             </div>
-                            <div>
+                            <div className="rounded-2xl border border-white/8 bg-zinc-950/80 p-4">
                               <p className="text-sm font-semibold text-white">Task automation</p>
-                              <p className="text-xs text-zinc-400">Asana + email + dashboard updates</p>
+                              <p className="mt-2 text-xs leading-6 text-zinc-500">Asana, due date, and owner follow-up.</p>
+                            </div>
+                            <div className="rounded-2xl border border-white/8 bg-zinc-950/80 p-4">
+                              <p className="text-sm font-semibold text-white">Team visibility</p>
+                              <p className="mt-2 text-xs leading-6 text-zinc-500">Owner, employee, and solo access flow.</p>
                             </div>
                           </div>
                         </div>
 
-                        <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                          <p className="text-xs uppercase tracking-[0.18em] text-zinc-500">Action rail</p>
-                          <div className="mt-4 space-y-3">
-                            {[
-                              ["Assign Task", "Create remediation task"],
-                              ["Notify Developer", "Send email delivery"],
-                              ["Track Fix", "Watch status in dashboard"],
-                            ].map(([title, subtitle]) => (
-                              <div key={title} className="flex items-center justify-between rounded-xl border border-white/8 bg-zinc-900/80 px-3 py-3">
+                        <div className="rounded-[1.4rem] border border-white/8 bg-zinc-950/80 p-5">
+                          <div className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
+                            <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                              <div className="flex items-center justify-between gap-3">
                                 <div>
-                                  <p className="text-sm font-medium text-white">{title}</p>
-                                  <p className="text-xs text-zinc-500">{subtitle}</p>
+                                  <p className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">Active finding</p>
+                                  <p className="mt-2 text-sm font-semibold text-white">Khanaval_ui/src/FIREBASE/getToken.ts</p>
                                 </div>
-                                <ChevronRight size={16} className="text-zinc-500" />
+                                <span className="rounded-full border border-rose-500/20 bg-rose-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-300">
+                                  Medium
+                                </span>
                               </div>
-                            ))}
+                              <div className="mt-4 rounded-2xl border border-white/8 bg-zinc-900/80 p-4">
+                                <p className="text-xs uppercase tracking-[0.18em] text-zinc-500">Code context</p>
+                                <div className="mt-3 space-y-2 font-mono text-xs text-zinc-300">
+                                  <p>const token = "AIzaSy...";</p>
+                                  <p className="text-blue-300">author: kr551344@gmail.com</p>
+                                  <p>line: 23 · branch: main</p>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="space-y-4">
+                              <div className="rounded-2xl border border-blue-400/15 bg-blue-500/10 p-4">
+                                <p className="text-sm font-semibold text-white">Assign in Asana</p>
+                                <p className="mt-2 text-xs leading-6 text-zinc-400">Create remediation work directly from the finding with due date and developer context.</p>
+                              </div>
+                              <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                                <p className="text-sm font-semibold text-white">Notify developer</p>
+                                <p className="mt-2 text-xs leading-6 text-zinc-400">Send task email with repo, file, severity, and task link.</p>
+                              </div>
+                              <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                                <p className="text-sm font-semibold text-white">Track task status</p>
+                                <p className="mt-2 text-xs leading-6 text-zinc-400">Watch remediation progress from dashboard to final verification.</p>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-
-                    <div className="mt-5 rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="text-xs uppercase tracking-[0.18em] text-zinc-500">YouTube demo placeholder</p>
-                          <p className="mt-2 text-sm text-zinc-300">Embed your product walkthrough, scan flow, or remediation demo here.</p>
-                        </div>
-                        <PlayCircle size={36} className="text-blue-300" />
-                      </div>
-                      <div className="mt-4 aspect-video rounded-2xl border border-dashed border-white/10 bg-[radial-gradient(circle_at_top,rgba(37,99,235,0.18),transparent_35%),rgba(9,12,18,0.92)]" />
                     </div>
                   </div>
                 </div>
