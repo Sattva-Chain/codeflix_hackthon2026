@@ -57,6 +57,7 @@ type RepoSecret = {
   severity?: string | null;
   fixedByEmail?: string | null;
   fixedAt?: string | null;
+  createdByEmail?: string | null;
 };
 
 type RepoRecord = {
@@ -174,6 +175,7 @@ export default function Report() {
               severity: entry.severity || "MEDIUM",
               fixedByEmail: entry.fixedByEmail || null,
               fixedAt: entry.fixedAt || null,
+              createdByEmail: entry.createdBy?.email || null,
             }))
           );
           return;
@@ -610,11 +612,12 @@ export default function Report() {
                       const serviceMeta = getSecretTypeMeta(secret.secretType || secret.type);
                       const ServiceIcon = serviceMeta.icon;
                       const secretValue = secret.maskedSecret || secret.secret || "Stored in record";
+                      const patchOwner = secret.fixedByEmail || (secret.status === "FIXED" ? secret.createdByEmail || null : null);
                       const fixedLabel =
                         secret.status === "FIXED"
-                          ? secret.fixedByEmail
-                            ? `${secret.fixedByEmail}${secret.fixedAt ? ` · ${formatDate(secret.fixedAt)}` : ""}`
-                            : "Marked fixed"
+                          ? patchOwner
+                            ? `${patchOwner}${secret.fixedAt ? ` · ${formatDate(secret.fixedAt)}` : ""}`
+                            : "Fixed"
                           : "Still open";
 
                       return (
@@ -719,9 +722,6 @@ export default function Report() {
                                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                   <div>
                                     <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">Who patched this</p>
-                                    <p className="mt-1 text-xs text-zinc-500">
-                                      Fix ownership recorded when this finding was marked resolved after patch verification.
-                                    </p>
                                   </div>
                                   <span
                                     className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-semibold ${
@@ -739,7 +739,7 @@ export default function Report() {
                                   <div className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-4 py-4">
                                     <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">Patched by</p>
                                     <p className="mt-3 break-all text-sm font-medium text-zinc-100">
-                                      {secret.fixedByEmail || (secret.status === "FIXED" ? "Recorded as fixed" : "Pending")}
+                                      {patchOwner || (secret.status === "FIXED" ? "Not recorded" : "Pending")}
                                     </p>
                                   </div>
                                   <div className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-4 py-4">

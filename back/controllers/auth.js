@@ -626,7 +626,10 @@ async function listMyVulnerabilities(req, res) {
     if (req.query.severity) query.severity = String(req.query.severity).toUpperCase();
     if (req.query.developerEmail) query.authorEmail = String(req.query.developerEmail).toLowerCase();
 
-    const vulnerabilities = await Vulnerability.find(query).sort({ scannedAt: -1, createdAt: -1 }).lean();
+    const vulnerabilities = await Vulnerability.find(query)
+      .populate("createdBy", "name email")
+      .sort({ scannedAt: -1, createdAt: -1 })
+      .lean();
     return res.json({ success: true, vulnerabilities });
   } catch (error) {
     console.error("Failed to list vulnerabilities:", error);
