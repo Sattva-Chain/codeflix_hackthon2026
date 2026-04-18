@@ -10,6 +10,7 @@ const repoSchema = new mongoose.Schema({
     type: String,
     required: true,
     trim: true,
+    unique: true
   },
   repoName: {
     type: String,
@@ -54,9 +55,6 @@ const repoSchema = new mongoose.Schema({
     default: 0
   }
 }, { timestamps: true });
-
-repoSchema.index({ userId: 1, gitUrl: 1 }, { unique: true });
-repoSchema.index({ organizationId: 1, ownerUserId: 1 });
 
 const Repository = mongoose.model("Repository", repoSchema);
 export default Repository;

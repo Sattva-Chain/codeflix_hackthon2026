@@ -1,86 +1,11 @@
 const organizationModel = require("../models/organization");
 const vulnerabilityModel = require("../models/vulnerability");
 const userModule = require("../models/user");
-const repoModule = require("../models/repo");
 const { buildOrganizationSummary } = require("./auth");
 
 const Organization = organizationModel.default || organizationModel;
 const Vulnerability = vulnerabilityModel.default || vulnerabilityModel;
 const User = userModule.default || userModule;
-const Repository = repoModule.default || repoModule;
-
-function normalizeEmail(email) {
-  return String(email || "").trim().toLowerCase();
-}
-
-function buildResolvedInviteEmailSet(memberList, invites = []) {
-  const resolvedEmails = new Set(
-    memberList
-      .map((member) => normalizeEmail(member.email))
-      .filter(Boolean)
-  );
-
-  (invites || []).forEach((invite) => {
-    if (invite.status === "ACCEPTED") {
-      const inviteEmail = normalizeEmail(invite.email);
-      if (inviteEmail) resolvedEmails.add(inviteEmail);
-    }
-  });
-
-  return resolvedEmails;
-}
-
-function appendPendingInvites(memberList, invites = []) {
-  const resolvedEmails = buildResolvedInviteEmailSet(memberList, invites);
-
-  (invites || [])
-    .filter((invite) => invite.status === "PENDING")
-    .forEach((invite) => {
-      const inviteEmail = normalizeEmail(invite.email);
-      if (!inviteEmail || resolvedEmails.has(inviteEmail)) {
-        return;
-      }
-
-      memberList.push({
-        _id: `invite:${invite._id}`,
-        name: null,
-        email: invite.email,
-        role: invite.role,
-        status: "INVITED",
-        joinedAt: invite.invitedAt || null,
-      });
-    });
-}
-
-async function resolveOrganizationMembers(organization) {
-  const dbUsers = await User.find({ organizationId: organization._id })
-    .select("name email role isActive createdAt updatedAt")
-    .lean();
-
-  const sourceMembers =
-    dbUsers.length > 0
-      ? dbUsers
-      : (organization.members || []).map((member) => ({
-          _id: member._id,
-          name: member.name || null,
-          email: member.email,
-          role: member.role,
-          isActive: member.isActive,
-          createdAt: member.createdAt,
-          updatedAt: member.updatedAt,
-        }));
-
-  const members = sourceMembers.map((member) => ({
-    _id: member._id,
-    name: member.name || null,
-    email: member.email,
-    role: member.role,
-    status: member.isActive === false ? "INACTIVE" : "ACTIVE",
-    joinedAt: member.createdAt || null,
-  }));
-
-  return { members };
-}
 
 function buildOrgScope(req) {
   const base = { organizationId: req.params.id };
@@ -164,8 +89,27 @@ async function getOrganizationMembers(req, res) {
       return res.status(404).json({ success: false, message: "Organization not found." });
     }
 
-    const { members } = await resolveOrganizationMembers(organization);
-    appendPendingInvites(members, organization.invites || []);
+    const members = (organization.members || []).map((member) => ({
+      _id: member._id,
+      name: member.name || null,
+      email: member.email,
+      role: member.role,
+      status: member.isActive === false ? "INACTIVE" : "ACTIVE",
+      joinedAt: member.createdAt || null,
+    }));
+
+    (organization.invites || [])
+      .filter((invite) => invite.status === "PENDING")
+      .forEach((invite) => {
+        members.push({
+          _id: `invite:${invite._id}`,
+          name: null,
+          email: invite.email,
+          role: invite.role,
+          status: "INVITED",
+          joinedAt: invite.invitedAt || null,
+        });
+      });
 
     return res.json({
       success: true,
@@ -185,84 +129,6 @@ async function getOrganizationMembers(req, res) {
   }
 }
 
-async function getOrganizationMemberRepositories(req, res) {
-  try {
-    const organization = await Organization.findById(req.params.id);
-    if (!organization) {
-      return res.status(404).json({ success: false, message: "Organization not found." });
-    }
-
-    const member = await User.findById(req.params.memberId).select("name email role organizationId");
-    if (!member || String(member.organizationId || "") !== String(organization._id)) {
-      return res.status(404).json({ success: false, message: "Organization member not found." });
-    }
-
-    const repositories = await Repository.find({ userId: member._id })
-      .sort({ updatedAt: -1, createdAt: -1 })
-      .lean();
-
-    return res.json({
-      success: true,
-      member: {
-        _id: member._id,
-        name: member.name || null,
-        email: member.email,
-        role: member.role,
-      },
-      repositories,
-    });
-  } catch (error) {
-    console.error("Get organization member repositories failed:", error);
-    return res.status(500).json({ success: false, message: "Unable to load member repositories." });
-  }
-}
-
-async function getOrganizationMemberRepositoryDetails(req, res) {
-  try {
-    const organization = await Organization.findById(req.params.id);
-    if (!organization) {
-      return res.status(404).json({ success: false, message: "Organization not found." });
-    }
-
-    const member = await User.findById(req.params.memberId).select("name email role organizationId");
-    if (!member || String(member.organizationId || "") !== String(organization._id)) {
-      return res.status(404).json({ success: false, message: "Organization member not found." });
-    }
-
-    const repository = await Repository.findOne({
-      _id: req.params.repoId,
-      userId: member._id,
-    }).lean();
-
-    if (!repository) {
-      return res.status(404).json({ success: false, message: "Repository not found for this employee." });
-    }
-
-    const vulnerabilities = await Vulnerability.find({
-      createdBy: member._id,
-      organizationId: organization._id,
-      repoUrl: repository.gitUrl,
-    })
-      .sort({ status: 1, file: 1, line: 1, createdAt: -1 })
-      .lean();
-
-    return res.json({
-      success: true,
-      member: {
-        _id: member._id,
-        name: member.name || null,
-        email: member.email,
-        role: member.role,
-      },
-      repository,
-      vulnerabilities,
-    });
-  } catch (error) {
-    console.error("Get organization member repository details failed:", error);
-    return res.status(500).json({ success: false, message: "Unable to load repository details." });
-  }
-}
-
 async function getOrganizationInvites(req, res) {
   try {
     const organization = await Organization.findById(req.params.id).select("invites");
@@ -277,85 +143,6 @@ async function getOrganizationInvites(req, res) {
   } catch (error) {
     console.error("Get organization invites failed:", error);
     return res.status(500).json({ success: false, message: "Unable to load invites." });
-  }
-}
-
-async function deleteOrganizationMember(req, res) {
-  try {
-    const organization = await Organization.findById(req.params.id);
-    if (!organization) {
-      return res.status(404).json({ success: false, message: "Organization not found." });
-    }
-
-    if (String(req.authUser.organizationId || "") !== String(organization._id)) {
-      return res.status(403).json({ success: false, message: "You can only manage members in your own organization." });
-    }
-
-    const memberId = String(req.params.memberId || "").trim();
-    if (!memberId) {
-      return res.status(400).json({ success: false, message: "Member identifier is required." });
-    }
-
-    if (memberId.startsWith("invite:")) {
-      const inviteId = memberId.slice("invite:".length);
-      const invite = (organization.invites || []).find((entry) => String(entry._id) === inviteId);
-
-      if (!invite || invite.status !== "PENDING") {
-        return res.status(404).json({ success: false, message: "Pending invite not found." });
-      }
-
-      organization.invites = organization.invites.filter((entry) => String(entry._id) !== inviteId);
-      await organization.save();
-
-      return res.json({
-        success: true,
-        removedType: "invite",
-        message: "Pending invite removed successfully.",
-      });
-    }
-
-    const member = await User.findById(memberId);
-    if (!member) {
-      return res.status(404).json({ success: false, message: "Employee not found." });
-    }
-
-    if (String(member.organizationId || "") !== String(organization._id)) {
-      return res.status(403).json({ success: false, message: "This employee does not belong to your organization." });
-    }
-
-    if (String(member._id) === String(organization.owner)) {
-      return res.status(400).json({ success: false, message: "Organization owner cannot be removed from this screen." });
-    }
-
-    const memberEmail = String(member.email || "").toLowerCase();
-
-    organization.members = (organization.members || []).filter((id) => String(id) !== String(member._id));
-    organization.invites = (organization.invites || []).filter((invite) => invite.email !== memberEmail);
-    await organization.save();
-
-    await Promise.all([
-      Repository.deleteMany({
-        $or: [{ userId: member._id }, { ownerUserId: member._id }],
-      }),
-      Vulnerability.deleteMany({
-        organizationId: organization._id,
-        $or: [
-          { createdBy: member._id },
-          { authorEmail: memberEmail },
-          { assignedTo: memberEmail },
-        ],
-      }),
-      User.deleteOne({ _id: member._id }),
-    ]);
-
-    return res.json({
-      success: true,
-      removedType: "member",
-      message: "Employee and related LeakShield data removed successfully.",
-    });
-  } catch (error) {
-    console.error("Delete organization member failed:", error);
-    return res.status(500).json({ success: false, message: "Unable to remove organization member." });
   }
 }
 
@@ -490,10 +277,7 @@ module.exports = {
   createOrganization,
   getOrganization,
   getOrganizationMembers,
-  getOrganizationMemberRepositories,
-  getOrganizationMemberRepositoryDetails,
   getOrganizationInvites,
-  deleteOrganizationMember,
   getOrganizationVulnerabilities,
   getOrganizationVulnerabilitySummary,
   getOrganizationRepos,

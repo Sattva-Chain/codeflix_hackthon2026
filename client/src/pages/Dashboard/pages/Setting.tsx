@@ -1,17 +1,9 @@
 "use client";
-import React, { useEffect, useMemo, useState } from "react";
-import {
-  Bell,
-  Building2,
-  CreditCard,
-  Globe,
-  LogOut,
-  Mail,
-  Shield,
-  UserCircle2,
-} from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { userAuth } from "../../../context/Auth";
 
+// --- ADDED INTERFACES TO FIX TS ERRORS ---
 interface CompanyData {
   companyName: string;
   emailId: string;
@@ -39,14 +31,13 @@ interface UserData {
   };
 }
 
-const CARD = "rounded-lg border border-zinc-800 bg-zinc-900/70 p-5";
-const PANEL = "rounded-lg border border-zinc-800 bg-zinc-900/70 overflow-hidden";
-
 const Settings: React.FC = () => {
   const auth = userAuth();
-  const { user, company, logout } = auth! as unknown as {
+  const { user, company, setUser, setCompany, logout } = auth! as unknown as {
     user: UserData | null;
     company: CompanyData | null;
+    setUser: (u: any) => void;
+    setCompany: (c: any) => void;
     logout: () => Promise<void>;
   };
 
@@ -59,371 +50,144 @@ const Settings: React.FC = () => {
     } else {
       setUserType("developer");
     }
-  }, [company, user]);
+  }, [user, company]);
 
   const logoutHandler = async () => {
     await logout();
   };
 
-  const developerStats = useMemo(
-    () => [
-      {
-        label: "Role",
-        value: user?.role || "Developer",
-        tone: "text-blue-300",
-        icon: UserCircle2,
-      },
-      {
-        label: "Repositories",
-        value: user?.TotalRepositories ?? 0,
-        tone: "text-emerald-300",
-        icon: Globe,
-      },
-      {
-        label: "Verified",
-        value: user?.VerifiedRepositories ?? 0,
-        tone: "text-sky-300",
-        icon: Shield,
-      },
-      {
-        label: "Needs attention",
-        value: user?.UnverifiedRepositories ?? 0,
-        tone: "text-orange-300",
-        icon: CreditCard,
-      },
-    ],
-    [user]
-  );
-
-  const organizationStats = useMemo(
-    () => [
-      {
-        label: "Organization",
-        value: company?.companyName || "LeakShield Org",
-        tone: "text-blue-300",
-        icon: Building2,
-      },
-      {
-        label: "Members",
-        value: company?.totalEmployees ?? 0,
-        tone: "text-emerald-300",
-        icon: UserCircle2,
-      },
-      {
-        label: "Repositories",
-        value: company?.totalRepositories ?? 0,
-        tone: "text-sky-300",
-        icon: Globe,
-      },
-      {
-        label: "Vulnerable employees",
-        value: company?.vulnerableCount ?? 0,
-        tone: "text-orange-300",
-        icon: Shield,
-      },
-    ],
-    [company]
-  );
-
-  const formatDate = (value?: string) => {
-    if (!value) return "No recent scans";
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
-  };
-
-  const tabs = ["Profile", "Security", "Notifications"];
-  const statCards = userType === "organization" ? organizationStats : developerStats;
-
   return (
-    <div className="w-full flex flex-col gap-8 text-zinc-200 pb-4">
-      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-zinc-800">
-        <div>
-          <h1 className="text-xl font-semibold text-zinc-100 tracking-tight">Settings</h1>
-          <p className="text-sm text-zinc-500 mt-1">
-            Manage your workspace profile, account access, and session preferences with the same LeakShield dashboard controls.
-          </p>
-        </div>
-        <button
-          onClick={logoutHandler}
-          className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-red-500/20 bg-red-500/10 text-red-300 hover:bg-red-500 hover:text-white transition-colors text-sm font-semibold"
-        >
-          <LogOut className="w-4 h-4" />
-          Logout
-        </button>
-      </header>
-
-      <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        {statCards.map((card) => {
-          const Icon = card.icon;
-          return (
-            <div key={card.label} className={CARD}>
-              <div className="flex justify-between items-start mb-3">
-                <p className="text-xs font-medium text-zinc-500 uppercase tracking-wide">{card.label}</p>
-                <Icon className={`w-4 h-4 ${card.tone}`} />
-              </div>
-              <div className={`text-2xl font-semibold ${card.tone} break-words`}>
-                {card.value ?? "N/A"}
-              </div>
-            </div>
-          );
-        })}
-      </section>
-
-      <section className="flex flex-wrap gap-3">
-        {tabs.map((tab) => (
+    <div className="text-gray-200 min-h-screen p-8 bg-[#0B1120]">
+      <div className="max-w-6xl mx-auto space-y-8">
+        
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-[#1E293B]">
+          <div>
+            <h2 className="text-3xl font-bold text-white tracking-wide">
+              Settings <span className="text-[#0ae8f0]">⚙️</span>
+            </h2>
+            <p className="text-gray-400 text-sm mt-1">Manage your account and preferences</p>
+          </div>
           <button
-            key={tab}
-            type="button"
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 rounded-full border text-xs font-bold uppercase tracking-[0.18em] transition-colors ${
-              activeTab === tab
-                ? "border-blue-500/30 bg-blue-500/10 text-blue-300"
-                : "border-zinc-800 bg-zinc-900/50 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700"
-            }`}
+            onClick={logoutHandler}
+            className="px-5 py-2.5 bg-red-500/10 text-red-500 border border-red-500/30 hover:bg-red-500 hover:text-white rounded-lg text-sm font-semibold transition-all duration-300"
           >
-            {tab}
+            Logout
           </button>
-        ))}
-      </section>
+        </div>
 
-      {activeTab === "Profile" && (
-        <section className="grid grid-cols-1 xl:grid-cols-[1.05fr_0.95fr] gap-4">
-          <div className={PANEL}>
-            <div className="px-5 py-4 border-b border-zinc-800 bg-zinc-950/40">
-              <h2 className="text-sm font-semibold text-zinc-100">
-                {userType === "organization" ? "Organization profile" : "Developer profile"}
-              </h2>
-              <p className="text-xs text-zinc-500 mt-1">
-                Core identity and workspace details available to the current session.
-              </p>
-            </div>
+        {/* Tabs */}
+        <div className="flex gap-6 border-b border-[#1E293B]">
+          {["Profile", "Security", "Notifications"].map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`pb-3 text-sm font-semibold tracking-wide transition-all uppercase ${
+                activeTab === tab
+                  ? "border-b-2 border-[#0ae8f0] text-[#0ae8f0]"
+                  : "text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
 
-            <div className="p-5 space-y-5">
+        {/* Profile Content */}
+        <div className="pt-4">
+          {activeTab === "Profile" && (
+            <div className="space-y-6">
+              {/* Organization Profile */}
               {userType === "organization" && company && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <DetailCard
-                    icon={<Building2 className="w-4 h-4 text-blue-300" />}
-                    label="Company name"
-                    value={company.companyName}
-                  />
-                  <DetailCard
-                    icon={<Mail className="w-4 h-4 text-blue-300" />}
-                    label="Organization email"
-                    value={company.emailId}
-                  />
-                  <DetailCard
-                    icon={<Globe className="w-4 h-4 text-blue-300" />}
-                    label="Company URL"
-                    value={company.CompanyURL || "Not provided"}
-                    href={company.CompanyURL}
-                  />
-                  <DetailCard
-                    icon={<UserCircle2 className="w-4 h-4 text-blue-300" />}
-                    label="Active employees"
-                    value={company.loggedInCount ?? 0}
-                  />
-                  <DetailCard
-                    icon={<Shield className="w-4 h-4 text-blue-300" />}
-                    label="Verified repositories"
-                    value={company.totalVerified ?? 0}
-                  />
-                  <DetailCard
-                    icon={<Shield className="w-4 h-4 text-orange-300" />}
-                    label="Unverified repositories"
-                    value={company.totalUnverified ?? 0}
-                    accent="text-orange-300"
-                  />
-                </div>
+                <ProfileCard title="Organization Overview">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                    <ProfileItem title="Company Name" value={company.companyName} />
+                    <ProfileItem title="Email" value={company.emailId} />
+                    <ProfileItem title="Company URL" value={company.CompanyURL} isLink />
+                    <ProfileItem title="Total Employees" value={company.totalEmployees} />
+                    <ProfileItem title="Active Employees" value={company.loggedInCount} />
+                    <ProfileItem title="Total Repositories" value={company.totalRepositories} />
+                    <ProfileItem title="Verified Repositories" value={company.totalVerified} />
+                    <ProfileItem title="Unverified Repositories" value={company.totalUnverified} />
+                    <ProfileItem title="Vulnerable Employees" value={company.vulnerableCount} isAlert />
+                  </div>
+                </ProfileCard>
               )}
 
+              {/* Developer Profile */}
               {userType === "developer" && user && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <DetailCard
-                    icon={<Mail className="w-4 h-4 text-blue-300" />}
-                    label="Email"
-                    value={user.email}
-                  />
-                  <DetailCard
-                    icon={<UserCircle2 className="w-4 h-4 text-blue-300" />}
-                    label="Role"
-                    value={user.role || "Developer"}
-                  />
-                  <DetailCard
-                    icon={<Globe className="w-4 h-4 text-blue-300" />}
-                    label="Current branch"
-                    value={user.Branch || "Not available"}
-                  />
-                  <DetailCard
-                    icon={<Shield className="w-4 h-4 text-blue-300" />}
-                    label="Last scanned"
-                    value={formatDate(user.LastScanned)}
-                  />
-                  <DetailCard
-                    icon={<Shield className="w-4 h-4 text-emerald-300" />}
-                    label="Verified repositories"
-                    value={user.VerifiedRepositories ?? 0}
-                    accent="text-emerald-300"
-                  />
-                  <DetailCard
-                    icon={<Shield className="w-4 h-4 text-orange-300" />}
-                    label="Unverified repositories"
-                    value={user.UnverifiedRepositories ?? 0}
-                    accent="text-orange-300"
-                  />
-                </div>
+                <ProfileCard title="Developer Identity">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                    <ProfileItem title="Email" value={user.email} />
+                    <ProfileItem title="Role" value={user.role} />
+                    <ProfileItem title="Branch" value={user.Branch} />
+                    <ProfileItem
+                      title="Last Scanned"
+                      value={user.LastScanned ? new Date(user.LastScanned).toLocaleString() : "Not scanned yet"}
+                    />
+                    <ProfileItem title="Verified Repositories" value={user.VerifiedRepositories} />
+                    <ProfileItem title="Unverified Repositories" value={user.UnverifiedRepositories} />
+                    <ProfileItem title="Total Repositories" value={user.TotalRepositories} />
+                  </div>
+
+                  {user.companyId && typeof user.companyId !== "string" && (
+                    <div className="mt-8 p-5 bg-[#0B1120] rounded-lg border border-[#1E293B]">
+                      <h4 className="text-[#0ae8f0] font-bold text-xs uppercase tracking-widest mb-3">
+                        Associated Organization
+                      </h4>
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <p className="text-white text-lg font-semibold">{user.companyId.companyName}</p>
+                        <a
+                          href={user.companyId.CompanyURL}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="px-4 py-2 bg-[#1E293B] hover:bg-[#2A374A] text-gray-300 rounded-md text-sm transition-colors border border-gray-700"
+                        >
+                          Visit Website ↗
+                        </a>
+                      </div>
+                    </div>
+                  )}
+                </ProfileCard>
               )}
             </div>
-          </div>
+          )}
 
-          <div className="space-y-4">
-            <div className={CARD}>
-              <h2 className="text-sm font-semibold text-zinc-100 mb-4">Workspace status</h2>
-              <div className="space-y-3">
-                <StatusRow
-                  label="Session type"
-                  value={userType === "organization" ? "Organization workspace" : "Solo developer workspace"}
-                />
-                <StatusRow
-                  label="Protection scope"
-                  value={userType === "organization" ? "Team-wide visibility enabled" : "Personal scan visibility enabled"}
-                />
-                <StatusRow
-                  label="Access mode"
-                  value="Electron session persistence active"
-                />
-              </div>
+          {(activeTab === "Security" || activeTab === "Notifications") && (
+            <div className="flex flex-col items-center justify-center p-16 bg-[#111827] border border-dashed border-[#1E293B] rounded-xl">
+              <span className="text-4xl mb-4">🚧</span>
+              <h3 className="text-xl text-gray-300 font-semibold mb-2">{activeTab} Settings</h3>
+              <p className="text-gray-500 text-sm">This module is currently under active development.</p>
             </div>
-
-            {user?.companyId && typeof user.companyId !== "string" && (
-              <div className={CARD}>
-                <h2 className="text-sm font-semibold text-zinc-100 mb-4">Associated organization</h2>
-                <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-4">
-                  <p className="text-lg font-semibold text-zinc-100">{user.companyId.companyName}</p>
-                  <a
-                    href={user.companyId.CompanyURL}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-2 text-sm text-blue-300 hover:text-blue-200 mt-3"
-                  >
-                    Visit organization website
-                    <Globe className="w-4 h-4" />
-                  </a>
-                </div>
-              </div>
-            )}
-
-            <div className={CARD}>
-              <h2 className="text-sm font-semibold text-zinc-100 mb-4">Quick notes</h2>
-              <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-4 text-sm text-zinc-400 leading-6">
-                This page is presentation-only for now. Account enforcement, role permissions, and secure session validation continue to stay on the backend and Electron layer.
-              </div>
-            </div>
-          </div>
-        </section>
-      )}
-
-      {activeTab === "Security" && (
-        <section className="grid grid-cols-1 xl:grid-cols-[0.95fr_1.05fr] gap-4">
-          <div className={CARD}>
-            <div className="flex items-center gap-2 mb-4">
-              <Shield className="w-4 h-4 text-blue-300" />
-              <h2 className="text-sm font-semibold text-zinc-100">Security posture</h2>
-            </div>
-            <div className="space-y-3">
-              <StatusRow label="Authentication" value="Backend JWT validation enabled" />
-              <StatusRow label="Password handling" value="Protected by hashed credential flow" />
-              <StatusRow label="Session storage" value="Persisted through Electron session bridge" />
-            </div>
-          </div>
-
-          <div className={PANEL}>
-            <div className="px-5 py-4 border-b border-zinc-800 bg-zinc-950/40">
-              <h2 className="text-sm font-semibold text-zinc-100">Security controls roadmap</h2>
-              <p className="text-xs text-zinc-500 mt-1">Planned improvements stay aligned with the current app architecture.</p>
-            </div>
-            <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
-              {[
-                "Password reset flow",
-                "Session activity history",
-                "Device visibility",
-                "Audit-oriented preference controls",
-              ].map((item) => (
-                <div key={item} className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-4 text-sm text-zinc-300">
-                  {item}
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {activeTab === "Notifications" && (
-        <section className="grid grid-cols-1 xl:grid-cols-[0.95fr_1.05fr] gap-4">
-          <div className={CARD}>
-            <div className="flex items-center gap-2 mb-4">
-              <Bell className="w-4 h-4 text-blue-300" />
-              <h2 className="text-sm font-semibold text-zinc-100">Notification routing</h2>
-            </div>
-            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-4 text-sm text-zinc-400 leading-6">
-              Invite email delivery, scan feedback, and organization activity notifications are wired through the backend so delivery rules stay centralized and safe.
-            </div>
-          </div>
-
-          <div className={PANEL}>
-            <div className="px-5 py-4 border-b border-zinc-800 bg-zinc-950/40">
-              <h2 className="text-sm font-semibold text-zinc-100">Upcoming notification preferences</h2>
-              <p className="text-xs text-zinc-500 mt-1">These are placeholders for future controls, styled consistently with the existing UI.</p>
-            </div>
-            <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
-              {[
-                "Invite accepted alerts",
-                "High severity scan digests",
-                "Repository verification reminders",
-                "Organization summary updates",
-              ].map((item) => (
-                <div key={item} className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-4 text-sm text-zinc-300">
-                  {item}
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
+          )}
+        </div>
+      </div>
     </div>
   );
 };
 
-const DetailCard: React.FC<{
-  icon: React.ReactNode;
-  label: string;
-  value: React.ReactNode;
-  href?: string;
-  accent?: string;
-}> = ({ icon, label, value, href, accent = "text-zinc-100" }) => (
-  <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-4">
-    <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-zinc-500 font-bold mb-3">
-      {icon}
-      {label}
-    </div>
-    {href ? (
-      <a
-        href={href}
-        target="_blank"
-        rel="noreferrer"
-        className="text-sm font-medium text-blue-300 hover:text-blue-200 break-all"
-      >
-        {value || "Not provided"}
-      </a>
-    ) : (
-      <div className={`text-sm font-medium break-words ${accent}`}>{value ?? "Not provided"}</div>
-    )}
+const ProfileCard: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+  <div className="p-8 rounded-xl bg-[#111827] border border-[#1E293B] shadow-2xl">
+    <h3 className="font-bold text-lg text-white mb-6 flex items-center gap-2">
+      <span className="w-2 h-6 bg-[#0ae8f0] rounded-sm block"></span>
+      {title}
+    </h3>
+    {children}
   </div>
 );
 
-const StatusRow: React.FC<{ label: string; value: string }> = ({ label, value }) => (
-  <div className="flex items-center justify-between gap-4 rounded-lg border border-zinc-800 bg-zinc-950/60 px-4 py-3">
-    <span className="text-sm text-zinc-500">{label}</span>
-    <span className="text-sm text-zinc-200 text-right">{value}</span>
+const ProfileItem: React.FC<{ title: string; value: any; isLink?: boolean; isAlert?: boolean }> = ({ title, value, isLink, isAlert }) => (
+  <div className="flex flex-col gap-1">
+    <p className="text-gray-500 text-xs font-bold uppercase tracking-wider">{title}</p>
+    {isLink ? (
+      <a href={value} target="_blank" rel="noreferrer" className="text-[#0ae8f0] hover:text-white transition-colors break-all text-base font-medium">
+        {value || "Not provided"}
+      </a>
+    ) : (
+      <p className={`text-base font-semibold ${isAlert && Number(value) > 0 ? "text-red-400" : "text-gray-100"}`}>
+        {value ?? "Not provided"}
+      </p>
+    )}
   </div>
 );
 

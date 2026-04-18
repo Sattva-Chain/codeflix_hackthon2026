@@ -1,10 +1,6 @@
 // server.js
 const path = require("path");
-const dotenv = require("dotenv");
-
-dotenv.config({ path: path.resolve(__dirname, ".env") });
-dotenv.config({ path: path.resolve(__dirname, "..", ".env"), override: false });
-
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 const express = require("express");
 const multer = require("multer");
 const { execFile } = require("child_process");
@@ -20,7 +16,6 @@ const authRouter = require("./routes/auth");
 const organizationRouter = require("./routes/organizations");
 const { default: user } = require("./models/user");
 const { default: comp } = require("./models/company");
-const repoModule = require("./models/repo");
 const { getGitBlameInfo, emptyBlameInfo } = require("./utils/gitBlame");
 const { resolveAuthUserFromHeader } = require("./middleware/auth");
 const { persistScanVulnerabilities } = require("./services/vulnerabilityPersistence");
@@ -36,32 +31,11 @@ const {
   commitSession,
   rollbackSession,
 } = require("./services/remediation");
-const Repository = repoModule.default || repoModule;
+const { createProjectManagementTask } = require("./services/projectManagement");
 
 const execFileAsync = util.promisify(execFile);
 const app = express();
 const PORT = 3000;
-
-async function ensureRepositoryIndexes() {
-  try {
-    const indexes = await Repository.collection.indexes();
-    const legacyGitUrlIndex = indexes.find(
-      (index) => index.name === "gitUrl_1" && index.unique
-    );
-
-    if (legacyGitUrlIndex) {
-      await Repository.collection.dropIndex("gitUrl_1");
-      console.log("ℹ️ Dropped legacy repositories.gitUrl unique index");
-    }
-
-    await Repository.collection.createIndex(
-      { userId: 1, gitUrl: 1 },
-      { unique: true, name: "userId_1_gitUrl_1" }
-    );
-  } catch (error) {
-    console.error("Failed to ensure repository indexes:", error.message);
-  }
-}
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -79,11 +53,11 @@ app.use(
 );
 
 mongoose
-  .connect("mongodb+srv://kr551344_db_user:ErqBwOEVmaJC2oPF@cluster1.uelsejd.mongodb.net/?retryWrites=true&w=majority&appName=cluster1")
-  .then(async () => {
-    console.log("✅ MongoDB Connected");
-    await ensureRepositoryIndexes();
-  })
+  .connect(
+    process.env.MONGODB_URI ||
+      "mongodb://kr551344:o43CV2CxzEyrBKVj@ac-jmgal16-shard-00-00.iabyjku.mongodb.net:27017,ac-jmgal16-shard-00-01.iabyjku.mongodb.net:27017,ac-jmgal16-shard-00-02.iabyjku.mongodb.net:27017/?authSource=admin&replicaSet=atlas-a37jzy-shard-0&retryWrites=true&w=majority&tls=true"
+  )
+  .then(() => console.log("✅ MongoDB Connected"))
   .catch((err) => console.error("❌ MongoDB Error:", err.message));
 
 app.use("/api", router);
@@ -123,6 +97,36 @@ function safeParseJson(lines) {
   return results;
 }
 
+function isLikelyTrufflehogFinding(entry) {
+  if (!entry || typeof entry !== "object") return false;
+
+  const level = String(entry.level || "").toLowerCase();
+  if (level.startsWith("info") || level.startsWith("debug") || level.startsWith("warn")) return false;
+
+  const hasDetector = !!(
+    entry.DetectorName ||
+    entry.detectorName ||
+    entry.DetectorType ||
+    entry.detectorType
+  );
+  const directRaw =
+    entry.Raw ??
+    entry.raw ??
+    entry.Secret ??
+    entry.SecretString ??
+    entry.raw_string;
+  const hasRaw =
+    (directRaw != null && String(directRaw).trim().length >= 3) ||
+    (Array.isArray(entry.stringsFound) && entry.stringsFound.some((v) => String(v || "").trim().length >= 3));
+  const hasSource = !!(entry.SourceMetadata || entry.source_metadata || entry.Path || entry.path || entry.file);
+
+  return (hasDetector || hasRaw) && hasSource;
+}
+
+function parseTrufflehogFindings(lines) {
+  return safeParseJson(lines).filter(isLikelyTrufflehogFinding);
+}
+
 // ✅ IGNORE PATTERNS (Active Filtering)
 const ignorePatterns = [
   "package-lock.json",
@@ -137,36 +141,55 @@ const ignorePatterns = [
   "client/public/vite.svg"
 ];
 
-function shouldIgnoreGeneratedFile(filePath) {
-  const normalized = String(filePath || "").replace(/\\/g, "/").toLowerCase();
-  if (!normalized) return true;
-
-  if (ignorePatterns.some((pattern) => normalized.includes(String(pattern).toLowerCase()))) {
-    return true;
-  }
-
-  if (/vite\.config\.[^/]*\.timestamp-\d+-[a-z0-9]+\.mjs$/i.test(normalized)) {
-    return true;
-  }
-
-  if (/\.timestamp-\d+-[a-z0-9]+\.mjs$/i.test(normalized) && normalized.includes("vite.config")) {
-    return true;
-  }
-
-  return false;
-}
-
 async function runTrufflehog(scanPath) {
-  const args = ["--json", `file://${scanPath}`];
-  try {
-    const { stdout } = await execFileAsync("trufflehog", args, {
-      maxBuffer: 1024 * 1024 * 80,
-      timeout: 1000 * 60 * 10,
-    });
-    return safeParseJson(stdout);
-  } catch (error) {
-    return safeParseJson(error.stdout || "");
+  const pathArg = String(scanPath || "").trim();
+  const argumentSets = [
+    ["--no-update", "filesystem", "--json", pathArg],
+    ["filesystem", "--json", pathArg],
+    ["--json", `file://${pathArg}`],
+  ];
+  const commandCandidates = [
+    process.env.TRUFFLEHOG_PATH,
+    path.join(__dirname, "tools", "trufflehog", process.platform === "win32" ? "trufflehog.exe" : "trufflehog"),
+    "trufflehog",
+  ].filter(Boolean);
+
+  let lastError = null;
+  for (const command of commandCandidates) {
+    for (const args of argumentSets) {
+      try {
+        const { stdout } = await execFileAsync(command, args, {
+          maxBuffer: 1024 * 1024 * 80,
+          timeout: 1000 * 60 * 10,
+        });
+        return parseTrufflehogFindings(stdout || "");
+      } catch (error) {
+        const parsed = parseTrufflehogFindings(error?.stdout || "");
+        if (parsed.length > 0) return parsed;
+
+        const rawMessage = String(error?.stderr || error?.message || "TruffleHog scan failed.")
+          .replace(/\s+/g, " ")
+          .trim();
+        const unavailable = /enoent|not recognized|not found|spawn\s+trufflehog|cannot find the file/i.test(rawMessage);
+        const incompatibleArgs = /unknown flag|expected command|invalid argument/i.test(rawMessage);
+        if (unavailable || incompatibleArgs) {
+          lastError = rawMessage;
+          continue;
+        }
+
+        const scannerError = new Error(`Scan engine error: ${rawMessage}`);
+        scannerError.statusCode = 503;
+        throw scannerError;
+      }
+    }
   }
+
+  const scannerError = new Error(
+    "Scan engine unavailable: TruffleHog is not installed or not available in PATH on the backend host."
+      + (lastError ? ` Last error: ${lastError}` : "")
+  );
+  scannerError.statusCode = 503;
+  throw scannerError;
 }
 
 async function analyzeCandidateWithAi(candidate) {
@@ -830,7 +853,7 @@ function assignSnippetsBasenamePass(repoRoot, pendingRows) {
 
   function shouldIgnoreRel(relUnix) {
     if (!relUnix) return true;
-    return shouldIgnoreGeneratedFile(relUnix);
+    return ignorePatterns.some((p) => relUnix.includes(p));
   }
 
   let filesChecked = 0;
@@ -925,7 +948,7 @@ function assignSnippetsByRepoWalk(repoRoot, pendingRows) {
 
   function shouldIgnoreRel(relUnix) {
     if (!relUnix) return true;
-    return shouldIgnoreGeneratedFile(relUnix);
+    return ignorePatterns.some((p) => relUnix.includes(p));
   }
 
   let filesChecked = 0;
@@ -1130,7 +1153,7 @@ async function buildScanResponse(scanPath, isGitRepo, extraMeta = {}, persistenc
   let findings = await runTrufflehog(scanPath);
   findings = findings.filter((f) => {
     const file = getFindingFileKey(f);
-    return !shouldIgnoreGeneratedFile(file);
+    return !ignorePatterns.some((pattern) => file.includes(pattern));
   });
   findings = filterEntropyFalsePositives(findings, scanPath);
 
@@ -1316,7 +1339,7 @@ app.post("/scan-url", async (req, res) => {
     // ✅ Filter ignored files
     findings = findings.filter((f) => {
       const file = getFindingFileKey(f);
-      return !shouldIgnoreGeneratedFile(file);
+      return !ignorePatterns.some((pattern) => file.includes(pattern));
     });
 
     findings = filterEntropyFalsePositives(findings, clonePath);
@@ -1335,7 +1358,8 @@ app.post("/scan-url", async (req, res) => {
     await persistFormattedScan(formatted, persistenceContext);
     return res.json(formatted);
   } catch (err) {
-    return res.status(500).json({ error: true, message: err.message });
+    const statusCode = Number.isInteger(err.statusCode) ? err.statusCode : 500;
+    return res.status(statusCode).json({ error: true, message: sanitizeErrorMessage(err.message) });
   } finally {
     try { fs.rmSync(clonePath, { recursive: true, force: true }); } catch {}
   }
@@ -1357,7 +1381,7 @@ app.post("/scan-zip", upload.single("zipfile"), async (req, res) => {
     // ✅ Filter ignored files
     findings = findings.filter((f) => {
       const file = getFindingFileKey(f);
-      return !shouldIgnoreGeneratedFile(file);
+      return !ignorePatterns.some((pattern) => file.includes(pattern));
     });
 
     findings = filterEntropyFalsePositives(findings, extractPath);
@@ -1371,7 +1395,8 @@ app.post("/scan-zip", upload.single("zipfile"), async (req, res) => {
     await persistFormattedScan(formatted, persistenceContext);
     return res.json(formatted);
   } catch (err) {
-    return res.status(500).json({ error: true, message: err.message });
+    const statusCode = Number.isInteger(err.statusCode) ? err.statusCode : 500;
+    return res.status(statusCode).json({ error: true, message: sanitizeErrorMessage(err.message) });
   } finally {
     try { fs.unlinkSync(zipPath); } catch {}
     try { fs.rmSync(extractPath, { recursive: true, force: true }); } catch {}
@@ -1409,7 +1434,8 @@ app.post("/scan-url-remediation", async (req, res) => {
     return res.json(await withRemediationMeta(formatted, session));
   } catch (err) {
     try { fs.rmSync(clonePath, { recursive: true, force: true }); } catch {}
-    return res.status(500).json({ error: true, message: err.message });
+    const statusCode = Number.isInteger(err.statusCode) ? err.statusCode : 500;
+    return res.status(statusCode).json({ error: true, message: sanitizeErrorMessage(err.message) });
   }
 });
 
@@ -1443,7 +1469,8 @@ app.post("/scan-zip-remediation", upload.single("zipfile"), async (req, res) => 
     return res.json(await withRemediationMeta(formatted, session));
   } catch (err) {
     try { fs.rmSync(extractPath, { recursive: true, force: true }); } catch {}
-    return res.status(500).json({ error: true, message: err.message });
+    const statusCode = Number.isInteger(err.statusCode) ? err.statusCode : 500;
+    return res.status(statusCode).json({ error: true, message: sanitizeErrorMessage(err.message) });
   } finally {
     try { fs.unlinkSync(zipPath); } catch {}
   }
@@ -1560,6 +1587,64 @@ app.post("/patch/rollback", async (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: sanitizeErrorMessage(err.message) });
+  }
+});
+
+app.post("/integrations/tasks", async (req, res) => {
+  try {
+    const actor = await resolveAuthUserFromHeader(req.headers.authorization);
+    if (!actor) {
+      return res.status(401).json({ success: false, message: "Authentication required." });
+    }
+
+    const isOrganizationUser = ["ORG_OWNER", "EMPLOYEE"].includes(String(actor.role || ""));
+    if (!isOrganizationUser) {
+      return res.status(403).json({
+        success: false,
+        message: "Task integration is available only for organization developers.",
+      });
+    }
+
+    const provider = String(req.body.provider || "asana").trim().toLowerCase();
+    const contributorName = String(req.body.contributorName || "").trim() || null;
+    const contributorEmail = String(req.body.contributorEmail || "").trim().toLowerCase() || null;
+
+    if (!contributorName && !contributorEmail) {
+      return res.status(400).json({ success: false, message: "Contributor name or email is required." });
+    }
+
+    const task = await createProjectManagementTask({
+      provider,
+      contributorName,
+      contributorEmail,
+      repoUrl: req.body.repoUrl || null,
+      branch: req.body.branch || null,
+      dueDate: req.body.dueDate || null,
+      findings: Array.isArray(req.body.findings) ? req.body.findings.slice(0, 25) : [],
+      summary: req.body.summary || {},
+      workspaceId: req.body.workspaceId || null,
+      projectId: req.body.projectId || null,
+      asanaToken: req.body.asanaToken || null,
+      requestedBy: actor
+        ? {
+            name: actor.name || null,
+            email: actor.email || null,
+          }
+        : null,
+    });
+
+    return res.json({
+      success: true,
+      message: `Task created in ${provider}.`,
+      task,
+      notification: task.notification || null,
+    });
+  } catch (err) {
+    const statusCode = Number.isInteger(err.statusCode) ? err.statusCode : 500;
+    return res.status(statusCode).json({
+      success: false,
+      message: sanitizeErrorMessage(err.message),
+    });
   }
 });
 

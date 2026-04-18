@@ -1,10 +1,9 @@
 "use client";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { userAuth } from "../../../context/Auth";
 import axios from "axios";
 import toast, { Toaster } from "react-hot-toast";
-import { Eye, EyeOff, Mail, Plus, ShieldCheck, Trash2, UserCog } from "lucide-react";
 
 interface Employee {
   id: string;
@@ -15,9 +14,6 @@ interface Employee {
   emailSent: boolean;
 }
 
-const CARD = "rounded-lg border border-zinc-800 bg-zinc-900/70 p-5";
-const PANEL = "rounded-lg border border-zinc-800 bg-zinc-900/70 overflow-hidden";
-
 const ManageEmploy: React.FC = () => {
   const { company } = userAuth()!;
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -26,9 +22,9 @@ const ManageEmploy: React.FC = () => {
   const [role, setRole] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [loadingIds, setLoadingIds] = useState<string[]>([]);
-  const navigate = useNavigate();
+  const navi = useNavigate();
 
-  const COMPANY_DOMAINS = ["gmail.com", "vit.edu"];
+  const COMPANY_DOMAINS = ["gmail.com", "vit.edu"]; // Allowed domains
 
   useEffect(() => {
     fetchMyEmployees();
@@ -56,12 +52,14 @@ const ManageEmploy: React.FC = () => {
   };
 
   const toggleCredentials = (id: string) => {
-    setVisibleIds((prev) => (prev.includes(id) ? prev.filter((value) => value !== id) : [...prev, id]));
+    setVisibleIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
   };
 
   const validateEmail = (email: string) => {
-    const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!regex.test(email)) return false;
+    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!re.test(email)) return false;
     const domain = email.split("@")[1];
     return COMPANY_DOMAINS.includes(domain);
   };
@@ -75,41 +73,39 @@ const ManageEmploy: React.FC = () => {
       toast.error(`Email must be valid and from allowed domains: ${COMPANY_DOMAINS.join(", ")}`);
       return;
     }
-
-    setEmployees((prev) => [
-      ...prev,
-      {
-        id: `temp-${Date.now()}`,
-        name: "New Employee (Pending)",
-        role,
-        email: newEmail,
-        password: newPassword,
-        emailSent: false,
-      },
-    ]);
+    const newEmp: Employee = {
+      id: `temp-${Date.now()}`,
+      name: `New Employee (Pending)`,
+      role,
+      email: newEmail,
+      password: newPassword,
+      emailSent: false,
+    };
+    setEmployees([...employees, newEmp]);
     setNewEmail("");
     setNewPassword("");
     setRole("");
-    toast.success("Employee prepared. Create the account to send credentials.");
+    toast.success("Employee added. Click 'Create Account' to save.");
   };
 
   const createEmployeeAccount = async (tempId: string) => {
-    const employee = employees.find((item) => item.id === tempId);
-    if (!employee) return;
+    const emp = employees.find(e => e.id === tempId);
+    if (!emp) return;
 
-    setLoadingIds((prev) => [...prev, tempId]);
+    setLoadingIds(prev => [...prev, tempId]);
+
     try {
       const { data } = await axios.post("http://localhost:3000/api/createEmpy", {
-        employeeEmail: employee.email,
-        employeePassword: employee.password,
-        employeeRole: employee.role,
-        id: company?._id,
+        employeeEmail: emp.email,
+        employeePassword: emp.password,
+        employeeRole: emp.role,
+        id: company?._id
       });
 
       if (data.success) {
-        toast.success("Account created and email sent.");
-        setEmployees((prev) =>
-          prev.map((item) => (item.id === tempId ? { ...item, emailSent: true, name: "Employee" } : item))
+        toast.success("Account created and mail sent!");
+        setEmployees(prev =>
+          prev.map(e => (e.id === tempId ? { ...e, emailSent: true, name: `Employee` } : e))
         );
       } else {
         toast.error(data.message || "Failed to create account.");
@@ -117,7 +113,7 @@ const ManageEmploy: React.FC = () => {
     } catch (error: any) {
       toast.error(error?.response?.data?.message || "Server error.");
     } finally {
-      setLoadingIds((prev) => prev.filter((id) => id !== tempId));
+      setLoadingIds(prev => prev.filter(id => id !== tempId));
     }
   };
 
@@ -127,90 +123,59 @@ const ManageEmploy: React.FC = () => {
     try {
       const { data } = await axios.post(`http://localhost:3000/api/deletetheProduct/${id}`);
       if (data.success) {
-        toast.success("Employee deleted successfully.");
-        setEmployees((prev) => prev.filter((employee) => employee.id !== id));
+        toast.success("Employee deleted successfully!");
+        setEmployees(prev => prev.filter(emp => emp.id !== id));
       } else {
         toast.error("Failed to delete employee.");
       }
-    } catch {
+    } catch (error: any) {
+      console.error(error);
       toast.error("Server error while deleting employee.");
     }
   };
 
-  const stats = useMemo(() => {
-    const pending = employees.filter((employee) => !employee.emailSent).length;
-    return {
-      total: employees.length,
-      active: employees.length - pending,
-      pending,
-    };
-  }, [employees]);
-
   return (
-    <div className="w-full flex flex-col gap-8 text-zinc-200 pb-4">
-      <Toaster
-        position="bottom-right"
-        toastOptions={{ style: { background: "#18181b", color: "#fff", border: "1px solid #27272a" } }}
-      />
-
-      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-zinc-800">
-        <div>
-          <h1 className="text-xl font-semibold text-zinc-100 tracking-tight">Team Management</h1>
-          <p className="text-sm text-zinc-500 mt-1">
-            Provision employees, review pending accounts, and jump into individual activity logs.
-          </p>
-        </div>
-      </header>
-
-      <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {[
-          { label: "Total members", value: stats.total, icon: UserCog, tone: "text-blue-300" },
-          { label: "Active", value: stats.active, icon: ShieldCheck, tone: "text-emerald-300" },
-          { label: "Pending", value: stats.pending, icon: Mail, tone: "text-orange-300" },
-        ].map((item) => {
-          const Icon = item.icon;
-          return (
-            <div key={item.label} className={CARD}>
-              <div className="flex justify-between items-start mb-3">
-                <p className="text-xs font-medium text-zinc-500 uppercase tracking-wide">{item.label}</p>
-                <Icon className={`w-4 h-4 ${item.tone}`} />
-              </div>
-              <div className={`text-3xl font-semibold tabular-nums ${item.tone}`}>{item.value}</div>
-            </div>
-          );
-        })}
-      </section>
-
-      <section className="grid grid-cols-1 xl:grid-cols-[0.95fr_1.05fr] gap-4">
-        <div className={CARD}>
-          <div className="flex items-center gap-2 mb-5">
-            <Plus className="w-4 h-4 text-blue-300" />
-            <h2 className="text-sm font-semibold text-zinc-100">Provision employee</h2>
+    <div className="min-h-screen p-8 bg-[#0B1120] text-gray-200">
+      <Toaster position="bottom-right" toastOptions={{ style: { background: '#1E293B', color: '#fff', border: '1px solid #334155' } }} />
+      
+      <div className="max-w-7xl mx-auto space-y-8">
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-[#1E293B]">
+          <div>
+            <h2 className="text-3xl font-bold text-white tracking-wide">
+              Manage Employees <span className="text-[#0ae8f0]">👥</span>
+            </h2>
+            <p className="text-gray-400 text-sm mt-1">Add, review, and manage your organization's members</p>
           </div>
+        </div>
 
-          <div className="space-y-4">
+        {/* Add New Employee Form */}
+        <div className="p-8 rounded-xl bg-[#111827] border border-[#1E293B] shadow-2xl">
+          <h3 className="font-bold text-lg text-white mb-6 flex items-center gap-2">
+            <span className="w-2 h-6 bg-[#0ae8f0] rounded-sm block"></span>
+            Provision New Employee
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <input
               type="email"
-              placeholder="Employee email address"
+              placeholder="Employee Email Address"
               value={newEmail}
-              onChange={(event) => setNewEmail(event.target.value)}
-              className="w-full p-3 bg-zinc-950 border border-zinc-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+              onChange={(e) => setNewEmail(e.target.value)}
+              className="bg-[#0B1120] border border-[#1E293B] text-white placeholder-gray-500 rounded-lg px-4 py-3 focus:outline-none focus:border-[#0ae8f0] focus:ring-1 focus:ring-[#0ae8f0] transition-all"
             />
             <input
               type="password"
-              placeholder="Temporary password"
+              placeholder="Temporary Password"
               value={newPassword}
-              onChange={(event) => setNewPassword(event.target.value)}
-              className="w-full p-3 bg-zinc-950 border border-zinc-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+              onChange={(e) => setNewPassword(e.target.value)}
+              className="bg-[#0B1120] border border-[#1E293B] text-white placeholder-gray-500 rounded-lg px-4 py-3 focus:outline-none focus:border-[#0ae8f0] focus:ring-1 focus:ring-[#0ae8f0] transition-all"
             />
             <select
-              onChange={(event) => setRole(event.target.value)}
+              onChange={(e) => setRole(e.target.value)}
               value={role}
-              className="w-full p-3 bg-zinc-950 border border-zinc-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition appearance-none"
+              className="bg-[#0B1120] border border-[#1E293B] text-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:border-[#0ae8f0] focus:ring-1 focus:ring-[#0ae8f0] transition-all appearance-none"
             >
-              <option value="" disabled>
-                Select department role
-              </option>
+              <option value="" disabled>Select Department Role</option>
               <option value="UI/UX Designer">UI/UX Designer</option>
               <option value="Frontend Developer">Frontend Developer</option>
               <option value="Backend Developer">Backend Developer</option>
@@ -220,109 +185,73 @@ const ManageEmploy: React.FC = () => {
               <option value="Data Scientist">Data Scientist</option>
               <option value="Product Manager">Product Manager</option>
             </select>
-
-            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 px-4 py-3 text-sm text-zinc-400 leading-6">
-              Legacy employee provisioning stays unchanged behind the scenes. This screen only aligns the UX with the rest of the dashboard.
-            </div>
-
             <button
-              type="button"
               onClick={addEmployeeToList}
-              className="inline-flex w-full items-center justify-center gap-2 px-5 py-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold"
+              className="bg-[#0ae8f0]/10 text-[#0ae8f0] border border-[#0ae8f0]/30 hover:bg-[#0ae8f0] hover:text-[#0B1120] font-semibold rounded-lg px-4 py-3 transition-all duration-300 flex items-center justify-center gap-2"
             >
-              <Plus className="w-4 h-4" />
-              Add employee
+              <span>+</span> Add Employee
             </button>
           </div>
         </div>
 
-        <div className={PANEL}>
-          <div className="px-5 py-4 border-b border-zinc-800 bg-zinc-950/40 flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold text-zinc-100">Employee roster</h2>
-              <p className="text-xs text-zinc-500 mt-1">Pending accounts and active members are shown in one table.</p>
-            </div>
-            <span className="px-2.5 py-1 rounded-full border border-zinc-700 text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-300">
-              {employees.length} entries
-            </span>
-          </div>
-
+        {/* Employee Table */}
+        <div className="p-8 rounded-xl bg-[#111827] border border-[#1E293B] shadow-2xl overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead className="bg-zinc-950/30">
-                <tr>
-                  {["Member", "Role", "Email", "Actions"].map((heading) => (
-                    <th key={heading} className="px-5 py-3 text-xs uppercase tracking-[0.18em] text-zinc-500">
-                      {heading}
-                    </th>
-                  ))}
+            <table className="w-full text-left whitespace-nowrap">
+              <thead>
+                <tr className="border-b border-[#1E293B]">
+                  <th className="pb-4 px-4 text-gray-500 text-xs font-bold uppercase tracking-wider">Employee Name</th>
+                  <th className="pb-4 px-4 text-gray-500 text-xs font-bold uppercase tracking-wider">Role</th>
+                  <th className="pb-4 px-4 text-gray-500 text-xs font-bold uppercase tracking-wider">Email Address</th>
+                  <th className="pb-4 px-4 text-gray-500 text-xs font-bold uppercase tracking-wider text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-zinc-800">
+              <tbody className="divide-y divide-[#1E293B]/50">
                 {employees.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="px-5 py-10 text-center text-sm text-zinc-500">
-                      No employees found. Provision a new employee to get started.
+                    <td colSpan={4} className="py-8 text-center text-gray-500 text-sm italic">
+                      No employees found. Provision a new employee above.
                     </td>
                   </tr>
                 ) : (
-                  employees.map((employee) => (
-                    <tr key={employee.id} className="hover:bg-zinc-800/20 transition-colors">
-                      <td className="px-5 py-4 text-sm text-zinc-200">
-                        <div className="flex items-center gap-3">
-                          <div className="w-9 h-9 rounded-md bg-zinc-950 border border-zinc-800 flex items-center justify-center text-zinc-400">
-                            <UserCog className="w-4 h-4" />
-                          </div>
-                          <div>
-                            <p className="font-medium">{employee.name}</p>
-                            {!employee.emailSent && (
-                              <span className="inline-flex mt-1 px-2 py-0.5 rounded-full border border-orange-500/20 bg-orange-500/10 text-[10px] font-semibold uppercase tracking-[0.18em] text-orange-300">
-                                Pending
-                              </span>
-                            )}
-                          </div>
-                        </div>
+                  employees.map((emp) => (
+                    <tr key={emp.id} className="hover:bg-[#151D2C] transition-colors group">
+                      <td className="py-4 px-4 text-sm font-semibold text-white">
+                        {emp.name}
+                        {!emp.emailSent && <span className="ml-2 text-[10px] bg-yellow-500/20 text-yellow-500 px-2 py-0.5 rounded-full uppercase tracking-wider">Pending</span>}
                       </td>
-                      <td className="px-5 py-4 text-sm text-zinc-300">{employee.role}</td>
-                      <td className="px-5 py-4 text-sm text-zinc-400 font-mono">{employee.email}</td>
-                      <td className="px-5 py-4">
-                        <div className="flex flex-wrap justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => toggleCredentials(employee.id)}
-                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800 text-xs font-medium"
-                          >
-                            {visibleIds.includes(employee.id) ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                            {visibleIds.includes(employee.id) ? "Hide creds" : "Show creds"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => navigate(`employedLogs/${employee.id}`)}
-                            className="px-3 py-2 rounded-md border border-blue-500/20 bg-blue-500/10 text-blue-300 hover:bg-blue-500/20 text-xs font-medium"
-                          >
-                            View logs
-                          </button>
+                      <td className="py-4 px-4 text-sm text-gray-400">{emp.role}</td>
+                      <td className="py-4 px-4 text-sm text-gray-300 font-mono text-xs">{emp.email}</td>
+                      <td className="py-4 px-4 flex justify-end items-center gap-3">
+                        <button
+                          onClick={() => toggleCredentials(emp.id)}
+                          className="bg-[#1E293B] hover:bg-[#2A374A] text-gray-300 border border-gray-700 text-xs font-medium px-3 py-1.5 rounded-md transition-colors"
+                        >
+                          {visibleIds.includes(emp.id) ? "Hide Creds" : "Show Creds"}
+                        </button>
+                        <button
+                          onClick={() => navi(`employedLogs/${emp.id}`)}
+                          className="bg-[#0ae8f0]/10 hover:bg-[#0ae8f0]/20 text-[#0ae8f0] border border-[#0ae8f0]/30 text-xs font-medium px-3 py-1.5 rounded-md transition-colors"
+                        >
+                          View Logs
+                        </button>
 
-                          {!employee.emailSent ? (
-                            <button
-                              type="button"
-                              onClick={() => createEmployeeAccount(employee.id)}
-                              disabled={loadingIds.includes(employee.id)}
-                              className="px-3 py-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50 text-xs font-medium min-w-[108px]"
-                            >
-                              {loadingIds.includes(employee.id) ? "Creating..." : "Create account"}
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => deleteEmployee(employee.id)}
-                              className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-md border border-red-500/20 bg-red-500/10 text-red-300 hover:bg-red-500/20 text-xs font-medium min-w-[108px]"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                              Delete
-                            </button>
-                          )}
-                        </div>
+                        {!emp.emailSent ? (
+                          <button
+                            onClick={() => createEmployeeAccount(emp.id)}
+                            disabled={loadingIds.includes(emp.id)}
+                            className="bg-green-500/10 hover:bg-green-500 text-green-400 hover:text-white border border-green-500/30 text-xs font-medium px-3 py-1.5 rounded-md transition-all disabled:opacity-50 disabled:cursor-not-allowed w-28 text-center"
+                          >
+                            {loadingIds.includes(emp.id) ? "Creating..." : "Create Account"}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => deleteEmployee(emp.id)}
+                            className="bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white border border-red-500/30 text-xs font-medium px-3 py-1.5 rounded-md transition-all w-28 text-center"
+                          >
+                            Delete
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))
@@ -330,29 +259,30 @@ const ManageEmploy: React.FC = () => {
               </tbody>
             </table>
           </div>
-        </div>
-      </section>
 
-      {visibleIds.length > 0 && (
-        <section className={CARD}>
-          <h2 className="text-sm font-semibold text-zinc-100 mb-4">Revealed credentials</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {employees
-              .filter((employee) => visibleIds.includes(employee.id))
-              .map((employee) => (
-                <div key={employee.id} className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-4">
-                  <p className="text-xs uppercase tracking-[0.18em] text-zinc-500 mb-2">User</p>
-                  <p className="text-sm text-zinc-200 font-mono break-all">{employee.email}</p>
-                  <p className="text-xs uppercase tracking-[0.18em] text-zinc-500 mt-4 mb-2">Password</p>
-                  <p className="text-sm text-blue-300 font-mono break-all">{employee.password}</p>
-                  <span className="inline-flex mt-4 px-2.5 py-1 rounded-full border border-zinc-700 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-300">
-                    {employee.role}
-                  </span>
-                </div>
-              ))}
-          </div>
-        </section>
-      )}
+          {/* Visible Credentials Section */}
+          {visibleIds.length > 0 && (
+            <div className="mt-8 p-6 bg-[#0B1120] rounded-lg border border-[#1E293B]">
+              <h3 className="text-[#0ae8f0] text-xs font-bold uppercase tracking-widest mb-4">
+                Revealed Credentials
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {employees
+                  .filter(emp => visibleIds.includes(emp.id))
+                  .map(emp => (
+                    <div key={emp.id} className="bg-[#111827] p-4 rounded-md border border-gray-800 font-mono text-sm relative">
+                      <p className="text-gray-400 mb-1">USER: <span className="text-white">{emp.email}</span></p>
+                      <p className="text-gray-400 mb-2">PASS: <span className="text-[#0ae8f0]">{emp.password}</span></p>
+                      <div className="absolute top-2 right-2 flex gap-2">
+                        <span className="text-[10px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded uppercase tracking-wider">{emp.role}</span>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 };

@@ -136,7 +136,7 @@ export default function RegisterPage() {
               type="text"
               value={organizationName}
               onChange={(event) => setOrganizationName(event.target.value)}
-              placeholder="secureScan Security"
+              placeholder="LeakShield Security"
               className="w-full mt-2 p-3 bg-white/10 border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
             />
           </div>

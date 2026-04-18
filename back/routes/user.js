@@ -6,7 +6,7 @@ const {
   createTokenForUser,
   validateToken,
 } = require("../services/authentication");
-const { OrgnizationLogin, CompnayAuth, createEmpy, getmyemploy, deletetheProduct, dataAboutEmply, loginStaff, UserAuth, numberkeysSafe, orgLoginData } = require("../controller/user");
+const { OrgnizationLogin, CompnayAuth, createEmpy, getmyemploy, deletetheProduct, dataAboutEmply, loginStaff, UserAuth, numberkeys, orgLoginData } = require("../controller/user");
 const SALT_ROUNDS = 10;
 router.post("/signup", async (req, res) => {
   try {
@@ -97,6 +97,6 @@ router.post("/loginStaff",loginStaff)
 router.post("/getlogEmploy",dataAboutEmply)
 router.post("/authsss",UserAuth)
 router.post("/orgLoginData",orgLoginData)
-router.post("/numberkeys",numberkeysSafe)
+router.post("/numberkeys",numberkeys)
 router.post("/deletethaeProduct/:ids",deletetheProduct)
 module.exports = router;

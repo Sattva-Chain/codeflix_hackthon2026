@@ -17,8 +17,6 @@ type VulnerabilityRecord = {
   authorEmail?: string | null;
   commitTime?: string | null;
   status?: string | null;
-  fixedByEmail?: string | null;
-  fixedAt?: string | null;
 };
 
 export default function OrganizationVulnerabilities() {
@@ -163,7 +161,7 @@ export default function OrganizationVulnerabilities() {
           <table className="w-full text-left">
             <thead className="bg-zinc-950/40">
               <tr>
-                {["Repository", "Branch", "File", "Line", "Type", "Severity", "Author", "Email", "Commit Time", "Status", "Patched By"].map((headingCell) => (
+                {["Repository", "Branch", "File", "Line", "Type", "Severity", "Author", "Email", "Commit Time", "Status"].map((headingCell) => (
                   <th key={headingCell} className="px-4 py-3 text-xs uppercase tracking-[0.18em] text-zinc-500">
                     {headingCell}
                   </th>
@@ -185,20 +183,11 @@ export default function OrganizationVulnerabilities() {
                     {row.commitTime ? new Date(row.commitTime).toLocaleString() : "N/A"}
                   </td>
                   <td className="px-4 py-4 text-sm text-zinc-300">{row.status || "OPEN"}</td>
-                  <td className="px-4 py-4 text-sm text-zinc-400">
-                    {row.status === "FIXED"
-                      ? row.fixedByEmail
-                        ? `${row.fixedByEmail}${row.fixedAt ? ` · ${new Date(row.fixedAt).toLocaleString()}` : ""}`
-                        : row.fixedAt
-                          ? new Date(row.fixedAt).toLocaleString()
-                          : "Recorded"
-                      : "—"}
-                  </td>
                 </tr>
               ))}
               {!records.length && (
                 <tr>
-                  <td colSpan={11} className="px-4 py-8 text-center text-sm text-zinc-500">
+                  <td colSpan={10} className="px-4 py-8 text-center text-sm text-zinc-500">
                     No vulnerability records match the current filters.
                   </td>
                 </tr>

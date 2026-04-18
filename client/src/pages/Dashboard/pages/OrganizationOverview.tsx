@@ -18,9 +18,8 @@ type Summary = {
 };
 
 export default function OrganizationOverview() {
-  const { token, organization, role } = userAuth()!;
+  const { token, user, organization, role } = userAuth()!;
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [orgDetails, setOrgDetails] = useState(organization);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -29,17 +28,12 @@ export default function OrganizationOverview() {
       if (!token || !organization?._id) return;
       setLoading(true);
       try {
-        const headers = { Authorization: `Bearer ${token}` };
-        const [summaryRes, organizationRes] = await Promise.all([
-          axios.get(`${API_BASE_URL}/api/organizations/${organization._id}/vulnerabilities/summary`, { headers }),
-          axios.get(`${API_BASE_URL}/api/organizations/${organization._id}`, { headers }),
-        ]);
-
-        if (active && summaryRes.data?.success) {
-          setSummary(summaryRes.data.summary);
-        }
-        if (active && organizationRes.data?.success) {
-          setOrgDetails(organizationRes.data.organization || organization);
+        const { data } = await axios.get(
+          `${API_BASE_URL}/api/organizations/${organization._id}/vulnerabilities/summary`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (active && data?.success) {
+          setSummary(data.summary);
         }
       } finally {
         if (active) setLoading(false);
@@ -48,61 +42,50 @@ export default function OrganizationOverview() {
     return () => {
       active = false;
     };
-  }, [token, organization]);
+  }, [token, organization?._id]);
 
   const cards = useMemo(
     () => [
       {
         label: role === "EMPLOYEE" ? "Visible vulnerabilities" : "Total vulnerabilities",
-        value: summary?.total ?? orgDetails?.summary?.totalVulnerabilities ?? 0,
+        value: summary?.total ?? organization?.summary?.totalVulnerabilities ?? 0,
         icon: AlertTriangle,
         color: "text-rose-300",
       },
       {
         label: "Open",
-        value: summary?.open ?? orgDetails?.summary?.open ?? 0,
+        value: summary?.open ?? organization?.summary?.open ?? 0,
         icon: ShieldCheck,
         color: "text-amber-300",
       },
       {
         label: "Fixed",
-        value: summary?.fixed ?? orgDetails?.summary?.fixed ?? 0,
+        value: summary?.fixed ?? organization?.summary?.fixed ?? 0,
         icon: ShieldCheck,
         color: "text-emerald-300",
       },
       {
         label: "Repositories",
-        value: summary?.repos ?? orgDetails?.summary?.repos ?? 0,
+        value: summary?.repos ?? organization?.summary?.repos ?? 0,
         icon: FolderGit2,
         color: "text-blue-300",
       },
       {
         label: "Developers",
-        value: summary?.developers ?? orgDetails?.summary?.developers ?? orgDetails?.members?.length ?? 0,
+        value: summary?.developers ?? organization?.members?.length ?? 0,
         icon: UserRound,
         color: "text-slate-200",
       },
     ],
-    [summary, orgDetails, role]
+    [summary, organization, role]
   );
-
-  const rosterStats = useMemo(() => {
-    const members = orgDetails?.members || [];
-    return {
-      totalMembers: orgDetails?.totalMembers ?? members.length,
-      activeMembers:
-        orgDetails?.summary?.activeMembers ?? members.filter((member) => member.status === "ACTIVE").length,
-      pendingInvites:
-        orgDetails?.summary?.pendingInvites ?? (orgDetails?.invites || []).filter((invite) => invite.status === "PENDING").length,
-    };
-  }, [orgDetails]);
 
   return (
     <div className="w-full flex flex-col gap-8 text-zinc-200 pb-4">
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-zinc-800">
         <div>
           <h1 className="text-xl font-semibold text-zinc-100 tracking-tight">
-            {orgDetails?.name || "Organization Overview"}
+            {organization?.name || "Organization Overview"}
           </h1>
           <p className="text-sm text-zinc-500 mt-1">
             {role === "ORG_OWNER"
@@ -152,51 +135,20 @@ export default function OrganizationOverview() {
             <Building2 size={16} className="text-zinc-500" />
             Organization snapshot
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-zinc-300">
-            <div className="space-y-3">
-              <p>
-                <span className="text-zinc-500">Name:</span> {orgDetails?.name || "Unknown"}
-              </p>
-              <p>
-                <span className="text-zinc-500">Owner:</span>{" "}
-                {orgDetails?.owner?.name || orgDetails?.owner?.email || "Unknown"}
-              </p>
-              <p>
-                <span className="text-zinc-500">Owner email:</span> {orgDetails?.owner?.email || "N/A"}
-              </p>
-              <p>
-                <span className="text-zinc-500">Slug:</span> {orgDetails?.slug || "N/A"}
-              </p>
-            </div>
-            <div className="space-y-3">
-              <p>
-                <span className="text-zinc-500">Members:</span> {rosterStats.totalMembers}
-              </p>
-              <p>
-                <span className="text-zinc-500">Active members:</span> {rosterStats.activeMembers}
-              </p>
-              <p>
-                <span className="text-zinc-500">Pending invites:</span> {rosterStats.pendingInvites}
-              </p>
-              <p>
-                <span className="text-zinc-500">Created:</span>{" "}
-                {orgDetails?.createdAt ? new Date(orgDetails.createdAt).toLocaleString() : "N/A"}
-              </p>
-            </div>
-          </div>
-          <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div className="rounded-md border border-zinc-800 bg-zinc-950/50 px-4 py-3">
-              <p className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">Open vulnerabilities</p>
-              <p className="mt-2 text-lg font-semibold text-amber-300">{summary?.open ?? orgDetails?.summary?.open ?? 0}</p>
-            </div>
-            <div className="rounded-md border border-zinc-800 bg-zinc-950/50 px-4 py-3">
-              <p className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">Repos tracked</p>
-              <p className="mt-2 text-lg font-semibold text-blue-300">{summary?.repos ?? orgDetails?.summary?.repos ?? 0}</p>
-            </div>
-            <div className="rounded-md border border-zinc-800 bg-zinc-950/50 px-4 py-3">
-              <p className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">Developers involved</p>
-              <p className="mt-2 text-lg font-semibold text-zinc-100">{summary?.developers ?? orgDetails?.summary?.developers ?? 0}</p>
-            </div>
+          <div className="space-y-3 text-sm text-zinc-300">
+            <p>
+              <span className="text-zinc-500">Name:</span> {organization?.name || "Unknown"}
+            </p>
+            <p>
+              <span className="text-zinc-500">Owner:</span>{" "}
+              {organization?.owner?.name || organization?.owner?.email || "Unknown"}
+            </p>
+            <p>
+              <span className="text-zinc-500">Slug:</span> {organization?.slug || "N/A"}
+            </p>
+            <p>
+              <span className="text-zinc-500">Members:</span> {organization?.members?.length ?? 0}
+            </p>
           </div>
         </div>
 
@@ -206,7 +158,7 @@ export default function OrganizationOverview() {
             Team activity
           </h2>
           <div className="space-y-3">
-            {(orgDetails?.members || []).slice(0, 6).map((member) => (
+            {(organization?.members || []).slice(0, 6).map((member) => (
               <div
                 key={member._id}
                 className="rounded-md border border-zinc-800 bg-zinc-950/50 px-4 py-3 flex items-center justify-between gap-3"
@@ -218,7 +170,7 @@ export default function OrganizationOverview() {
                 <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-400">{member.status}</span>
               </div>
             ))}
-            {!orgDetails?.members?.length && (
+            {!organization?.members?.length && (
               <p className="text-sm text-zinc-500">No organization members are loaded yet.</p>
             )}
           </div>

@@ -1,7 +1,7 @@
 
 
 import './App.css'
-import {Navigate, Route,Routes} from "react-router-dom"
+import {Route,Routes} from "react-router-dom"
 import DashBord from './pages/DashBord'
 import Analysis from './pages/components/Analysis'
 import Profile from './pages/components/Profile'
@@ -18,13 +18,10 @@ import DashboardHome from './pages/Dashboard/pages/DashboardHome'
 import Settings from './pages/Dashboard/pages/Setting'
 import Scans from './pages/Dashboard/pages/Scans'
 import TeamHub from './pages/Dashboard/pages/TeamHub'
-import { userAuth } from './context/Auth'
 import EmployedLogs from './pages/Dashboard/pages/EmployedLogs'
 import Report from './pages/Dashboard/pages/Report'
 import OrganizationVulnerabilities from './pages/Dashboard/pages/OrganizationVulnerabilities'
 function App() {
-
-const { company, user, token, sessionHydrated } = userAuth()!
   return (
     <>
 <Toaster
@@ -41,20 +38,8 @@ const { company, user, token, sessionHydrated } = userAuth()!
         }}
       />
     <Routes>
-      <Route
-          path="/"
-          element={
-            !sessionHydrated ? (
-              <div className="min-h-screen bg-zinc-950 flex items-center justify-center text-zinc-500 text-sm">
-                Loading session…
-              </div>
-            ) : company || user || token ? (
-              <Navigate to="/Dashboard2" replace />
-            ) : (
-              <LoginPage />
-            )
-          }
-        />
+      <Route path="/" element={<Home />} />
+      <Route path='/auth/login' element={<LoginPage/>}/>
       <Route path='/register' element={<RegisterPage/>}/>
       <Route path='/invite/accept' element={<InviteAcceptPage/>}/>
     

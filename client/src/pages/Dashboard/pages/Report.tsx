@@ -1,6 +1,5 @@
 "use client";
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import axios from "axios";
+import React, { useState, useEffect, useRef } from "react";
 import { Pie, Bar } from "react-chartjs-2";
 import {
   Chart as ChartJS,
@@ -11,360 +10,44 @@ import {
   LinearScale,
   BarElement,
 } from "chart.js";
-import {
-  AlertTriangle,
-  BarChart3,
-  Bot,
-  CheckCircle2,
-  Cloud,
-  Database,
-  ExternalLink,
-  FileWarning,
-  FolderGit2,
-  Github,
-  KeyRound,
-  Link2,
-  ShieldCheck,
-  Sparkles,
-  X,
-} from "lucide-react";
+import { FiDatabase, FiCheckCircle, FiAlertTriangle, FiKey, FiExternalLink } from "react-icons/fi";
 import { userAuth } from "../../../context/Auth";
 
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement);
 
-const CARD = "rounded-lg border border-zinc-800 bg-zinc-900/70 p-5";
-const PANEL = "rounded-lg border border-zinc-800 bg-zinc-900/70 overflow-hidden";
-const API_BASE_URL = "http://localhost:3000";
+const CARD_STYLE = "p-8 rounded-xl bg-[#111827] border border-[#1E293B] shadow-2xl";
 
-type RepoSecret = {
-  _id?: string;
-  type?: string;
-  secretType?: string;
-  file?: string;
-  line?: number | string;
-  secret?: string | null;
-  maskedSecret?: string | null;
-  author?: string | null;
-  email?: string | null;
-  authorEmail?: string | null;
-  commitTime?: string | null;
-  commitHash?: string | null;
-  snippet?: {
-    lines?: { num: number; text: string }[];
-    highlightLine?: number | null;
-  } | null;
-  status?: string | null;
-  severity?: string | null;
-  fixedByEmail?: string | null;
-  fixedAt?: string | null;
-};
-
-type RepoRecord = {
-  _id?: string;
-  gitUrl: string;
-  Branch?: string;
-  Status?: string;
-  LastScanned?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  TotalSecrets?: number;
-  VerifiedRepositories?: number;
-  UnverifiedRepositories?: number;
-  vulnerabilities?: Record<string, RepoSecret[]>;
-};
-
-function getSecretTypeMeta(secretType?: string | null) {
-  const value = String(secretType || "").toLowerCase();
-
-  if (value.includes("redis")) {
-    return { label: "Redis", tone: "text-rose-300 border-rose-500/20 bg-rose-500/10", icon: Database };
-  }
-  if (value.includes("mongo")) {
-    return { label: "MongoDB", tone: "text-emerald-300 border-emerald-500/20 bg-emerald-500/10", icon: Database };
-  }
-  if (value.includes("aws")) {
-    return { label: "AWS", tone: "text-amber-300 border-amber-500/20 bg-amber-500/10", icon: Cloud };
-  }
-  if (value.includes("gcp") || value.includes("google")) {
-    return { label: "GCP", tone: "text-sky-300 border-sky-500/20 bg-sky-500/10", icon: Cloud };
-  }
-  if (value.includes("gemini")) {
-    return { label: "Gemini", tone: "text-violet-300 border-violet-500/20 bg-violet-500/10", icon: Sparkles };
-  }
-  if (value.includes("github")) {
-    return { label: "GitHub", tone: "text-zinc-200 border-zinc-700 bg-zinc-800/60", icon: Github };
-  }
-  if (value.includes("openai")) {
-    return { label: "OpenAI", tone: "text-emerald-300 border-emerald-500/20 bg-emerald-500/10", icon: Bot };
-  }
-
-  return { label: "Credential", tone: "text-blue-300 border-blue-500/20 bg-blue-500/10", icon: KeyRound };
-}
-
-function getHighlightedSnippet(entry: RepoSecret) {
-  const lines = entry.snippet?.lines || [];
-  const highlightLine = entry.snippet?.highlightLine;
-  if (!lines.length) return null;
-  return lines.find((line) => line.num === highlightLine) || lines[0] || null;
-}
-
-export default function Report() {
-  const { user, repo, company, role, organization, token } = userAuth() || {};
-  const [selectedRepo, setSelectedRepo] = useState<RepoRecord | null>(null);
-  const [repoSecrets, setRepoSecrets] = useState<RepoSecret[]>([]);
-  const [detailsLoading, setDetailsLoading] = useState(false);
+const Report = () => {
+  const { user, repo, company } = userAuth() || {};
+  const [selectedRepo, setSelectedRepo] = useState<any | null>(null);
+  const [repoSecrets, setRepoSecrets] = useState<any[]>([]);
   const modalRef = useRef<HTMLDivElement | null>(null);
 
+  // Close modal on Escape
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setSelectedRepo(null);
-    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setSelectedRepo(null);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Close modal on outside click
   useEffect(() => {
-    const onClick = (event: MouseEvent) => {
+    const onClick = (e: MouseEvent) => {
       if (!selectedRepo) return;
-      if (modalRef.current && !modalRef.current.contains(event.target as Node)) {
-        setSelectedRepo(null);
-      }
+      if (modalRef.current && !modalRef.current.contains(e.target as Node)) setSelectedRepo(null);
     };
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
   }, [selectedRepo]);
 
-  const developerRepos = (repo || []) as RepoRecord[];
-  const totalRepos = user?.TotalRepositories ?? developerRepos.length ?? 0;
-  const verifiedRepos = user?.VerifiedRepositories ?? 0;
-  const unverifiedRepos = user?.UnverifiedRepositories ?? 0;
-
-  const openRepoDetails = async (record: RepoRecord) => {
-    setSelectedRepo(record);
-    setRepoSecrets([]);
-    setDetailsLoading(true);
-
-    try {
-      if (token) {
-        const { data } = await axios.get(`${API_BASE_URL}/api/auth/vulnerabilities`, {
-          headers: { Authorization: `Bearer ${token}` },
-          params: {
-            repo: record.gitUrl,
-            branch: record.Branch || undefined,
-          },
-        });
-
-        if (data?.success) {
-          setRepoSecrets(
-            (data.vulnerabilities || []).map((entry: any) => ({
-              _id: entry._id,
-              type: entry.secretType || "Secret",
-              secretType: entry.secretType || "Secret",
-              file: entry.file || undefined,
-              line: entry.line ?? undefined,
-              secret: entry.secret || null,
-              maskedSecret: entry.maskedSecret || null,
-              author: entry.author || null,
-              email: entry.authorEmail || null,
-              authorEmail: entry.authorEmail || null,
-              commitTime: entry.commitTime || null,
-              commitHash: entry.commitHash || null,
-              snippet: entry.snippet || null,
-              status: entry.status || "OPEN",
-              severity: entry.severity || "MEDIUM",
-              fixedByEmail: entry.fixedByEmail || null,
-              fixedAt: entry.fixedAt || null,
-            }))
-          );
-          return;
-        }
-      }
-
-      if (record.vulnerabilities) {
-        setRepoSecrets(
-          Object.entries(record.vulnerabilities).flatMap(([file, findings]) =>
-            findings.map((finding) => ({ ...finding, file }))
-          )
-        );
-      }
-    } catch {
-      if (record.vulnerabilities) {
-        setRepoSecrets(
-          Object.entries(record.vulnerabilities).flatMap(([file, findings]) =>
-            findings.map((finding) => ({ ...finding, file }))
-          )
-        );
-      }
-    } finally {
-      setDetailsLoading(false);
-    }
-  };
-
-  const formatDate = (value: unknown) => {
-    if (!value) return "N/A";
-    const date = new Date(String(value));
-    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
-  };
-
-  const commonOptions = useMemo(
-    () => ({
-      color: "#94a3b8",
-      plugins: {
-        legend: { labels: { color: "#e5e7eb" } },
-      },
-    }),
-    []
-  );
-
-  const barOptions = useMemo(
-    () => ({
-      ...commonOptions,
-      scales: {
-        x: { ticks: { color: "#94a3b8" }, grid: { color: "#27272a" } },
-        y: { ticks: { color: "#94a3b8" }, grid: { color: "#27272a" } },
-      },
-    }),
-    [commonOptions]
-  );
-
-  const verificationPieData = useMemo(
-    () => ({
-      labels: ["Verified", "Unverified"],
-      datasets: [
-        {
-          data: [verifiedRepos, unverifiedRepos],
-          backgroundColor: ["#2563eb", "#f97316"],
-          borderColor: "#18181b",
-          borderWidth: 2,
-        },
-      ],
-    }),
-    [verifiedRepos, unverifiedRepos]
-  );
-
-  const verificationBarData = useMemo(
-    () => ({
-      labels: ["Repositories"],
-      datasets: [
-        {
-          label: "Verified",
-          data: [verifiedRepos],
-          backgroundColor: "#2563eb",
-          borderRadius: 6,
-        },
-        {
-          label: "Unverified",
-          data: [unverifiedRepos],
-          backgroundColor: "#f97316",
-          borderRadius: 6,
-        },
-      ],
-    }),
-    [verifiedRepos, unverifiedRepos]
-  );
-
-  const secretTypes = Array.from(new Set(repoSecrets.map((secret) => secret.type).filter(Boolean)));
-  const secretFiles = Array.from(new Set(repoSecrets.map((secret) => secret.file).filter(Boolean)));
-
-  const secretsPieData = useMemo(
-    () => ({
-      labels: secretTypes,
-      datasets: [
-        {
-          data: secretTypes.map((type) => repoSecrets.filter((secret) => secret.type === type).length),
-          backgroundColor: ["#2563eb", "#0ea5e9", "#f97316", "#ef4444", "#10b981"],
-          borderColor: "#18181b",
-          borderWidth: 2,
-        },
-      ],
-    }),
-    [repoSecrets, secretTypes]
-  );
-
-  const secretsBarData = useMemo(
-    () => ({
-      labels: secretFiles,
-      datasets: [
-        {
-          label: "Secrets",
-          data: secretFiles.map((file) => repoSecrets.filter((secret) => secret.file === file).length),
-          backgroundColor: "#2563eb",
-          borderRadius: 6,
-        },
-      ],
-    }),
-    [repoSecrets, secretFiles]
-  );
-
-  const statCards = [
-    {
-      label: "Tracked repositories",
-      value: totalRepos,
-      icon: FolderGit2,
-      tone: "text-blue-300",
-    },
-    {
-      label: "Verified",
-      value: verifiedRepos,
-      icon: ShieldCheck,
-      tone: "text-emerald-300",
-    },
-    {
-      label: "Needs attention",
-      value: unverifiedRepos,
-      icon: AlertTriangle,
-      tone: "text-orange-300",
-    },
-  ];
-
-  const selectedRepoTotalSecrets = selectedRepo?.TotalSecrets ?? repoSecrets.length;
-  const selectedRepoAffectedFiles = repoSecrets.length
-    ? new Set(repoSecrets.map((secret) => secret.file).filter(Boolean)).size
-    : selectedRepoTotalSecrets > 0
-      ? 1
-      : 0;
-
-  if (role === "ORG_OWNER" && user) {
-    return (
-      <div className="w-full flex flex-col gap-8 text-zinc-200 pb-4">
-        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-zinc-800">
-          <div>
-            <h1 className="text-xl font-semibold text-zinc-100 tracking-tight">Security Reports</h1>
-            <p className="text-sm text-zinc-500 mt-1">
-              Owner repository drill-downs now live inside team management so you can inspect each employee separately.
-            </p>
-          </div>
-        </header>
-
-        <div className={`${CARD} min-h-[300px] flex flex-col items-center justify-center text-center`}>
-          <BarChart3 className="w-10 h-10 text-blue-400 mb-4" />
-          <h2 className="text-lg font-semibold text-zinc-100">Use Team Management for employee repos</h2>
-          <p className="text-sm text-zinc-500 mt-3 max-w-lg leading-6">
-            Open the team page and use the employee `View repos` action to inspect what each member has scanned and how many exposed keys are open.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   if (company && !user) {
     return (
-      <div className="w-full flex flex-col gap-8 text-zinc-200 pb-4">
-        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-zinc-800">
-          <div>
-            <h1 className="text-xl font-semibold text-zinc-100 tracking-tight">Security Reports</h1>
-            <p className="text-sm text-zinc-500 mt-1">
-              Developer reports are available on individual workspaces. Organization-wide risk lives in vulnerability management.
-            </p>
-          </div>
-        </header>
-
-        <div className={`${CARD} min-h-[300px] flex flex-col items-center justify-center text-center`}>
-          <BarChart3 className="w-10 h-10 text-blue-400 mb-4" />
-          <h2 className="text-lg font-semibold text-zinc-100">Organization session detected</h2>
-          <p className="text-sm text-zinc-500 mt-3 max-w-lg leading-6">
-            This page stays focused on personal repository reports. For organization owners, the richer cross-team view is now available under
-            the vulnerability dashboard.
+      <div className="flex justify-center items-center h-screen bg-[#0B1120] text-center p-6 text-[#0ae8f0] font-semibold text-xl">
+        <div className="bg-[#111827] border border-[#1E293B] p-10 rounded-xl shadow-2xl">
+          <span className="text-4xl mb-4 block">👔</span>
+          Organization Account Detected
+          <p className="text-gray-400 mt-2 text-sm font-normal">
+            Security reports are only available for developer accounts.
           </p>
         </div>
       </div>
@@ -373,452 +56,319 @@ export default function Report() {
 
   if (!user) {
     return (
-      <div className={`${CARD} min-h-[320px] flex flex-col items-center justify-center text-center`}>
-        <AlertTriangle className="w-10 h-10 text-orange-300 mb-4" />
-        <h2 className="text-lg font-semibold text-zinc-100">No active developer session</h2>
-        <p className="text-sm text-zinc-500 mt-3">Sign in as a developer to view repository-level reports.</p>
+      <div className="flex justify-center items-center h-screen bg-[#0B1120] text-center p-6">
+        <div className="bg-[#111827] border border-red-900/50 p-10 rounded-xl text-lg font-medium text-red-500 shadow-2xl">
+          ⚠ No User Logged In!
+        </div>
       </div>
     );
   }
 
+  const handleRepoClick = (r: any) => {
+    setSelectedRepo(r);
+    if (r.vulnerabilities) {
+      const secretsFlat = Object.values(r.vulnerabilities).flat();
+      setRepoSecrets(secretsFlat);
+    } else {
+      setRepoSecrets([]);
+    }
+  };
+
+  const formatDate = (d: any) => {
+    if (!d) return "N/A";
+    const date = new Date(d);
+    return isNaN(date.getTime()) ? String(d) : date.toLocaleString();
+  };
+
+  // --- Chart Configurations for Dark Mode ---
+  const commonOptions = {
+    color: '#9ca3af',
+    plugins: { legend: { labels: { color: '#e5e7eb' } } }
+  };
+
+  const barOptions = {
+    ...commonOptions,
+    scales: {
+      x: { ticks: { color: '#9ca3af' }, grid: { color: '#1E293B' } },
+      y: { ticks: { color: '#9ca3af' }, grid: { color: '#1E293B' } }
+    }
+  };
+
+  // --- Chart Data ---
+  const pieData = {
+    labels: ["Verified", "Unverified"],
+    datasets: [
+      {
+        data: [user.VerifiedRepositories ?? 0, user.UnverifiedRepositories ?? 0],
+        backgroundColor: ["#10b981", "#ef4444"],
+        borderColor: "#111827",
+        borderWidth: 2,
+      },
+    ],
+  };
+
+  const barData = {
+    labels: ["Repositories"],
+    datasets: [
+      { label: "Verified", data: [user.VerifiedRepositories ?? 0], backgroundColor: "#10b981", borderRadius: 4 },
+      { label: "Unverified", data: [user.UnverifiedRepositories ?? 0], backgroundColor: "#ef4444", borderRadius: 4 },
+    ],
+  };
+
+  const secretsPieData = {
+    labels: Array.from(new Set(repoSecrets.map((s) => s.type))),
+    datasets: [
+      {
+        data: Array.from(new Set(repoSecrets.map((s) => s.type))).map(
+          (type) => repoSecrets.filter((s) => s.type === type).length
+        ),
+        backgroundColor: ["#0ae8f0", "#3b82f6", "#ef4444", "#eab308", "#10b981"],
+        borderColor: "#111827",
+        borderWidth: 2,
+      },
+    ],
+  };
+
+  const secretsBarData = {
+    labels: Array.from(new Set(repoSecrets.map((s) => s.file))),
+    datasets: [
+      {
+        label: "Secrets Count",
+        data: Array.from(new Set(repoSecrets.map((s) => s.file))).map(
+          (file) => repoSecrets.filter((s) => s.file === file).length
+        ),
+        backgroundColor: "#0ae8f0",
+        borderRadius: 4,
+      },
+    ],
+  };
+
   return (
-    <div className="w-full flex flex-col gap-8 text-zinc-200 pb-4">
-      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-zinc-800">
-        <div>
-          <h1 className="text-xl font-semibold text-zinc-100 tracking-tight">Security Reports</h1>
-          <p className="text-sm text-zinc-500 mt-1">
-            Repository verification metrics and drill-down details for your saved scan history.
-          </p>
-        </div>
-        <div className="text-sm text-zinc-500">
-          {role === "EMPLOYEE" ? `${user.email} · employee workspace` : user.email}
-        </div>
-      </header>
+    <div className="min-h-screen text-gray-200 p-8 bg-[#0B1120]">
+      <style>{`
+        @keyframes fadeInScale { from { opacity: 0; transform: translateY(-6px) scale(.98);} to { opacity: 1; transform: translateY(0) scale(1);} }
+        .animate-fadeInScale { animation: fadeInScale 160ms ease-out; }
+      `}</style>
 
-      <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {statCards.map((card) => {
-          const Icon = card.icon;
-          return (
-            <div key={card.label} className={CARD}>
-              <div className="flex justify-between items-start mb-3">
-                <p className="text-xs font-medium text-zinc-500 uppercase tracking-wide">{card.label}</p>
-                <Icon className={`w-4 h-4 ${card.tone}`} />
-              </div>
-              <div className={`text-3xl font-semibold tabular-nums ${card.tone}`}>{card.value ?? 0}</div>
-            </div>
-          );
-        })}
-      </section>
-
-      <section className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <div className={CARD}>
-          <h2 className="text-sm font-medium text-zinc-200 mb-5">Verification mix</h2>
-          <div className="h-72 flex justify-center items-center">
-            <Pie data={verificationPieData} options={commonOptions} />
-          </div>
-        </div>
-        <div className={CARD}>
-          <h2 className="text-sm font-medium text-zinc-200 mb-5">Verification volume</h2>
-          <div className="h-72">
-            <Bar data={verificationBarData} options={barOptions} />
-          </div>
-        </div>
-      </section>
-
-      <section className={PANEL}>
-        <div className="px-5 py-4 border-b border-zinc-800 flex items-center justify-between gap-3 bg-zinc-950/40">
+      <div className="max-w-7xl mx-auto space-y-8">
+        
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-[#1E293B]">
           <div>
-            <h2 className="text-sm font-semibold text-zinc-100">Tracked repositories</h2>
-            <p className="text-xs text-zinc-500 mt-1">Open a repository to inspect the stored secrets summary and metadata.</p>
+            <h2 className="text-3xl font-bold text-white tracking-wide">
+              Security Report <span className="text-[#0ae8f0]">🔍</span>
+            </h2>
+            <p className="text-gray-400 text-sm mt-1 font-mono">{user.email?.split("@")[0]}</p>
           </div>
-          <span className="px-2.5 py-1 rounded-full border border-zinc-700 text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-300">
-            {developerRepos.length} repos
-          </span>
         </div>
 
-        {developerRepos.length ? (
-          <div className="divide-y divide-zinc-800">
-            {developerRepos.map((record, index) => {
-              const risk = record.Status === "Vulnerable";
-              return (
-                <div key={record._id || index} className="px-5 py-5 hover:bg-zinc-800/20 transition-colors">
-                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                    <div className="min-w-0 flex-1">
-                      <a
-                        href={record.gitUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-2 text-blue-300 hover:text-blue-200 text-sm font-medium break-all"
-                      >
-                        {record.gitUrl}
-                        <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+        {/* Stats Cards */}
+        <div className="grid gap-6 grid-cols-1 sm:grid-cols-3">
+          {[
+            { title: "Total Repositories", val: user.TotalRepositories, color: "text-[#0ae8f0]", icon: <FiDatabase size={24} /> },
+            { title: "Verified", val: user.VerifiedRepositories, color: "text-green-500", icon: <FiCheckCircle size={24} /> },
+            { title: "Unverified", val: user.UnverifiedRepositories, color: "text-red-500", icon: <FiAlertTriangle size={24} /> },
+          ].map((item, i) => (
+            <div key={i} className={`${CARD_STYLE} flex items-center gap-5`}>
+              <div className={`p-4 rounded-lg bg-[#0B1120] border border-[#1E293B] ${item.color}`}>
+                {item.icon}
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">{item.title}</p>
+                <p className={`text-4xl font-bold mt-1 ${item.color}`}>{item.val ?? 0}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Charts */}
+        <div className="grid sm:grid-cols-2 gap-6">
+          <div className={CARD_STYLE}>
+            <h3 className="font-bold text-sm text-white mb-6 uppercase tracking-wider flex items-center gap-2">
+              <span className="w-2 h-4 bg-blue-500 rounded-sm block"></span>
+              Verification Status
+            </h3>
+            <div className="h-64 flex justify-center">
+              <Pie data={pieData} options={commonOptions} />
+            </div>
+          </div>
+          <div className={CARD_STYLE}>
+            <h3 className="font-bold text-sm text-white mb-6 uppercase tracking-wider flex items-center gap-2">
+              <span className="w-2 h-4 bg-green-500 rounded-sm block"></span>
+              Verified vs Unverified
+            </h3>
+            <div className="h-64">
+              <Bar data={barData} options={barOptions} />
+            </div>
+          </div>
+        </div>
+
+        {/* Repo List */}
+        <div className={CARD_STYLE}>
+          <div className="flex items-center justify-between mb-6 pb-4 border-b border-[#1E293B]">
+            <h3 className="font-bold text-lg text-white flex items-center gap-2">
+              <span className="w-2 h-6 bg-yellow-500 rounded-sm block"></span>
+              Tracked Git Repositories
+            </h3>
+            <div className="text-xs font-bold text-gray-500 bg-[#0B1120] px-3 py-1 rounded-md border border-[#1E293B]">
+              TOTAL: {repo?.length ?? 0}
+            </div>
+          </div>
+
+          {repo?.length ? (
+            <div className="space-y-3">
+              {repo.map((r, index) => (
+                <div key={r._id || index} className="p-5 bg-[#0B1120] rounded-lg border border-[#1E293B] hover:border-[#0ae8f0]/50 transition-colors group">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <div className="flex-1 min-w-0">
+                      <a href={r.gitUrl} target="_blank" rel="noreferrer" className="text-[#0ae8f0] hover:text-white font-mono text-sm break-all transition-colors inline-flex items-center gap-2">
+                        {r.gitUrl} <FiExternalLink size={12} />
                       </a>
-                    <div className="flex flex-wrap gap-x-5 gap-y-2 mt-3 text-xs text-zinc-500">
-                        <span>Branch: <span className="text-zinc-300">{record.Branch || "N/A"}</span></span>
-                        <span>Last scanned: <span className="text-zinc-300">{formatDate(record.LastScanned)}</span></span>
-                        <span>Open keys: <span className="text-orange-300 font-medium">{record.TotalSecrets ?? 0}</span></span>
+                      <div className="text-xs text-gray-500 mt-2 font-mono uppercase">
+                        Branch: <span className="text-gray-300">{r.Branch ?? "N/A"}</span>
                       </div>
                     </div>
-
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={`px-3 py-1 rounded-full border text-[11px] font-semibold uppercase tracking-[0.18em] ${
-                          risk
-                            ? "border-orange-500/20 bg-orange-500/10 text-orange-300"
-                            : "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
-                        }`}
-                      >
-                        {record.Status || "Unknown"}
+                    <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-end">
+                      <span className={`px-3 py-1 rounded border text-xs font-bold tracking-wider uppercase ${r.Status === "Vulnerable" ? "text-red-400 bg-red-500/10 border-red-500/20" : "text-green-400 bg-green-500/10 border-green-500/20"}`}>
+                        {r.Status ?? "Unknown"}
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => openRepoDetails(record)}
-                        className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors"
+                      <button 
+                        onClick={() => handleRepoClick(r)} 
+                        className="px-4 py-2 rounded-lg bg-[#0ae8f0]/10 text-[#0ae8f0] border border-[#0ae8f0]/30 hover:bg-[#0ae8f0] hover:text-[#0B1120] text-sm font-semibold transition-all duration-300 flex items-center gap-2"
                       >
-                        <FileWarning className="w-4 h-4" />
-                        View details
+                        <FiKey size={14} /> Details
                       </button>
                     </div>
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="px-5 py-12 text-center text-sm text-zinc-500">No repositories have been saved for this developer yet.</div>
-        )}
-      </section>
+              ))}
+            </div>
+          ) : (
+            <p className="text-gray-500 py-8 text-center text-sm italic">No repositories found in the database.</p>
+          )}
+        </div>
+      </div>
 
+      {/* Modal */}
       {selectedRepo && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" />
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm transition-opacity" />
           <div
             ref={modalRef}
-            className="relative w-full max-w-5xl max-h-[90vh] overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl"
+            className="relative w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-[#111827] border border-[#1E293B] p-8 rounded-xl shadow-2xl animate-fadeInScale scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
           >
-            <div className="px-6 py-5 border-b border-zinc-800 flex items-start justify-between gap-4 bg-zinc-950/40">
+            {/* Header */}
+            <div className="flex justify-between items-start gap-4 mb-6 pb-6 border-b border-[#1E293B]">
               <div>
-                <h2 className="text-lg font-semibold text-zinc-100">Repository Analysis</h2>
-                <p className="text-sm text-blue-300 mt-2 break-all">{selectedRepo.gitUrl}</p>
+                <h3 className="text-2xl font-bold text-white mb-2 flex items-center gap-3">
+                  <span className="w-2 h-6 bg-[#0ae8f0] rounded-sm block"></span>
+                  Repository Analysis
+                </h3>
+                <p className="text-sm font-mono text-[#0ae8f0] break-all">{selectedRepo.gitUrl}</p>
               </div>
-              <button
-                type="button"
-                onClick={() => setSelectedRepo(null)}
-                className="p-2 rounded-md border border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+              <button 
+                onClick={() => setSelectedRepo(null)} 
+                className="text-gray-500 hover:text-white p-2 bg-[#0B1120] rounded-lg border border-[#1E293B] transition-colors"
               >
-                <X className="w-4 h-4" />
+                ✕
               </button>
             </div>
 
-            <div className="p-6 space-y-6">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className={CARD}>
-                  <h3 className="text-sm font-medium text-zinc-200 mb-4">Repository metadata</h3>
-                  <div className="space-y-3 text-sm">
-                    <div className="flex justify-between gap-4">
-                      <span className="text-zinc-500">Status</span>
-                      <span className={selectedRepo.Status === "Vulnerable" ? "text-orange-300" : "text-emerald-300"}>
-                        {selectedRepo.Status || "N/A"}
+            {/* Repo Metadata */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-8">
+              <div className="space-y-3 text-sm">
+                <div className="flex justify-between border-b border-[#1E293B]/50 pb-2">
+                  <span className="text-gray-500 uppercase text-xs tracking-wider">Status</span> 
+                  <span className={`font-bold ${selectedRepo.Status === "Vulnerable" ? "text-red-400" : "text-green-400"}`}>{selectedRepo.Status ?? "N/A"}</span>
+                </div>
+                <div className="flex justify-between border-b border-[#1E293B]/50 pb-2">
+                  <span className="text-gray-500 uppercase text-xs tracking-wider">Branch</span> 
+                  <span className="text-white font-mono">{selectedRepo.Branch ?? "N/A"}</span>
+                </div>
+                <div className="flex justify-between border-b border-[#1E293B]/50 pb-2">
+                  <span className="text-gray-500 uppercase text-xs tracking-wider">Verified</span> 
+                  <span className="text-white">{selectedRepo.VerifiedRepositories ?? 0}</span>
+                </div>
+                <div className="flex justify-between pb-2">
+                  <span className="text-gray-500 uppercase text-xs tracking-wider">Unverified</span> 
+                  <span className="text-white">{selectedRepo.UnverifiedRepositories ?? 0}</span>
+                </div>
+              </div>
+              <div className="space-y-3 text-sm">
+                <div className="flex justify-between border-b border-[#1E293B]/50 pb-2">
+                  <span className="text-gray-500 uppercase text-xs tracking-wider">Last Scanned</span> 
+                  <span className="text-white text-right">{formatDate(selectedRepo.LastScanned)}</span>
+                </div>
+                <div className="flex justify-between border-b border-[#1E293B]/50 pb-2">
+                  <span className="text-gray-500 uppercase text-xs tracking-wider">Added On</span> 
+                  <span className="text-white text-right">{formatDate(selectedRepo.createdAt)}</span>
+                </div>
+                <div className="flex justify-between pb-2">
+                  <span className="text-gray-500 uppercase text-xs tracking-wider">Updated</span> 
+                  <span className="text-white text-right">{formatDate(selectedRepo.updatedAt)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Total Secrets Alert */}
+            <div className={`mb-8 p-5 rounded-lg border flex justify-between items-center ${repoSecrets.length > 0 ? "bg-red-500/10 border-red-500/30" : "bg-green-500/10 border-green-500/30"}`}>
+              <div className="flex items-center gap-3">
+                {repoSecrets.length > 0 ? <FiAlertTriangle className="text-red-400" size={24}/> : <FiCheckCircle className="text-green-400" size={24} />}
+                <span className={`text-lg font-bold ${repoSecrets.length > 0 ? "text-red-400" : "text-green-400"}`}>
+                  Exposed Secrets / Tokens Detected
+                </span>
+              </div>
+              <span className={`text-3xl font-black ${repoSecrets.length > 0 ? "text-red-500" : "text-green-500"}`}>
+                {selectedRepo.TotalSecrets ?? repoSecrets.length}
+              </span>
+            </div>
+
+            {/* Secrets Badges & Charts */}
+            {repoSecrets.length > 0 && (
+              <>
+                <div className="mb-6">
+                  <h4 className="text-xs text-gray-500 font-bold uppercase tracking-wider mb-3">Detected Types</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {repoSecrets.map((s, idx) => (
+                      <span key={idx} className="flex items-center gap-1 px-3 py-1.5 text-xs font-mono rounded-md bg-[#0B1120] border border-[#1E293B] text-gray-300">
+                        <FiKey className="text-[#0ae8f0]" size={12} /> {s.type}
                       </span>
-                    </div>
-                    <div className="flex justify-between gap-4">
-                      <span className="text-zinc-500">Branch</span>
-                      <span className="text-zinc-200">{selectedRepo.Branch || "N/A"}</span>
-                    </div>
-                    <div className="flex justify-between gap-4">
-                      <span className="text-zinc-500">Last scanned</span>
-                      <span className="text-zinc-200">{formatDate(selectedRepo.LastScanned)}</span>
-                    </div>
-                    <div className="flex justify-between gap-4">
-                      <span className="text-zinc-500">Created</span>
-                      <span className="text-zinc-200">{formatDate(selectedRepo.createdAt)}</span>
-                    </div>
-                    <div className="flex justify-between gap-4">
-                      <span className="text-zinc-500">Updated</span>
-                      <span className="text-zinc-200">{formatDate(selectedRepo.updatedAt)}</span>
-                    </div>
+                    ))}
                   </div>
                 </div>
-
-                <div className={CARD}>
-                    <h3 className="text-sm font-medium text-zinc-200 mb-4">Secret summary</h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="rounded-lg border border-orange-500/20 bg-orange-500/10 px-4 py-4">
-                      <p className="text-[11px] uppercase tracking-[0.18em] text-orange-200/80 font-bold">Open exposed keys</p>
-                      <p className="text-3xl font-semibold text-orange-300 mt-3">{selectedRepoTotalSecrets}</p>
-                    </div>
-                    <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 px-4 py-4">
-                      <p className="text-[11px] uppercase tracking-[0.18em] text-zinc-500 font-bold">Affected files</p>
-                      <p className="text-3xl font-semibold text-zinc-100 mt-3">{selectedRepoAffectedFiles}</p>
-                    </div>
-                    <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 px-4 py-4">
-                      <p className="text-[11px] uppercase tracking-[0.18em] text-zinc-500 font-bold">Detail records</p>
-                      <p className="text-3xl font-semibold text-blue-300 mt-3">{repoSecrets.length}</p>
-                    </div>
+                <div className="grid sm:grid-cols-2 gap-6 bg-[#0B1120] p-6 rounded-xl border border-[#1E293B]">
+                  <div>
+                    <h5 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-4">Distribution by Type</h5>
+                    <Pie data={secretsPieData} options={commonOptions} />
                   </div>
-
-                  <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/60 px-4 py-4">
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.2em] text-zinc-500 font-bold">Exposure status</p>
-                      <p className="text-sm text-zinc-400 mt-2 leading-6">
-                        {detailsLoading
-                          ? "Loading stored repository findings for this developer..."
-                          : repoSecrets.length > 0
-                          ? `${selectedRepoTotalSecrets} exposed keys are currently tracked for this repository.`
-                          : selectedRepoTotalSecrets > 0
-                            ? `${selectedRepoTotalSecrets} exposed keys were detected in the last scan, but the detailed per-file breakdown is not available in this saved report yet.`
-                            : "No exposed keys are currently recorded for this repository."}
-                      </p>
-                    </div>
+                  <div>
+                    <h5 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-4">Distribution by File</h5>
+                    <Bar data={secretsBarData} options={barOptions} />
                   </div>
                 </div>
-              </div>
+              </>
+            )}
 
-              {!detailsLoading && repoSecrets.length > 0 && (
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                  <div className={CARD}>
-                    <h3 className="text-sm font-medium text-zinc-200 mb-4">By secret type</h3>
-                    <div className="h-72 flex justify-center items-center">
-                      <Pie data={secretsPieData} options={commonOptions} />
-                    </div>
-                  </div>
-                  <div className={CARD}>
-                    <h3 className="text-sm font-medium text-zinc-200 mb-4">By file</h3>
-                    <div className="h-72">
-                      <Bar data={secretsBarData} options={barOptions} />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {!detailsLoading && repoSecrets.length > 0 && (
-                <div className={PANEL}>
-                  <div className="px-5 py-4 border-b border-zinc-800 bg-zinc-950/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div>
-                      <h3 className="text-sm font-semibold text-zinc-100">Stored findings</h3>
-                      <p className="text-xs text-zinc-500 mt-1">
-                        Saved vulnerability records with API type, line ownership, code context, and patch trail.
-                      </p>
-                    </div>
-                    <span className="px-2.5 py-1 rounded-full border border-zinc-700 text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-300">
-                      {repoSecrets.length} records
-                    </span>
-                  </div>
-                  <div className="p-5 space-y-4">
-                    {repoSecrets.map((secret, index) => {
-                      const snippetLine = getHighlightedSnippet(secret);
-                      const serviceMeta = getSecretTypeMeta(secret.secretType || secret.type);
-                      const ServiceIcon = serviceMeta.icon;
-                      const secretValue = secret.maskedSecret || secret.secret || "Stored in record";
-                      const fixedLabel =
-                        secret.status === "FIXED"
-                          ? secret.fixedByEmail
-                            ? `${secret.fixedByEmail}${secret.fixedAt ? ` · ${formatDate(secret.fixedAt)}` : ""}`
-                            : "Marked fixed"
-                          : "Still open";
-
-                      return (
-                        <div
-                          key={secret._id || `${secret.file}-${secret.line}-${index}`}
-                          className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-4 md:p-5"
-                        >
-                          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                            <div className="min-w-0 flex-1 space-y-4">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-semibold ${serviceMeta.tone}`}>
-                                  <ServiceIcon className="h-3.5 w-3.5" />
-                                  {serviceMeta.label}
-                                </span>
-                                <span className="rounded-full border border-zinc-700 bg-zinc-900 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-300">
-                                  {secret.secretType || secret.type || "Secret"}
-                                </span>
-                                <span
-                                  className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] ${
-                                    secret.status === "FIXED"
-                                      ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
-                                      : "border-orange-500/20 bg-orange-500/10 text-orange-300"
-                                  }`}
-                                >
-                                  {secret.status || "OPEN"}
-                                </span>
-                                <span className="rounded-full border border-zinc-700 bg-zinc-900 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-300">
-                                  {secret.severity || "MEDIUM"}
-                                </span>
-                              </div>
-
-                              <div className="space-y-1">
-                                <h4 className="text-base font-semibold text-zinc-100 break-all">
-                                  {secret.file || "Unknown file"}
-                                </h4>
-                                <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-zinc-500">
-                                  <span>Line: <span className="text-zinc-300">{secret.line ?? snippetLine?.num ?? "N/A"}</span></span>
-                                  <span>Author: <span className="text-zinc-300">{secret.author || "Unknown"}</span></span>
-                                  <span>Email: <span className="text-zinc-300 break-all">{secret.authorEmail || secret.email || "N/A"}</span></span>
-                                </div>
-                              </div>
-
-                              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                                <div className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-4">
-                                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">Recorded key</p>
-                                  <p className="mt-3 break-all rounded-lg border border-zinc-800 bg-zinc-950/80 px-3 py-3 font-mono text-sm text-rose-200">
-                                    {secretValue}
-                                  </p>
-                                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-zinc-500">
-                                    <span>Commit time: <span className="text-zinc-300">{formatDate(secret.commitTime)}</span></span>
-                                    <span>Commit: <span className="text-zinc-300 font-mono">{secret.commitHash || "N/A"}</span></span>
-                                  </div>
-                                </div>
-
-                                <div className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-4">
-                                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">Patch record</p>
-                                  <p className="mt-3 text-sm font-medium text-zinc-100">{fixedLabel}</p>
-                                  <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
-                                    <div className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-3">
-                                      <p className="text-zinc-500 uppercase tracking-[0.16em]">Status</p>
-                                      <p className="mt-2 text-zinc-200">{secret.status || "OPEN"}</p>
-                                    </div>
-                                    <div className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-3">
-                                      <p className="text-zinc-500 uppercase tracking-[0.16em]">Type / API</p>
-                                      <p className="mt-2 text-zinc-200">{secret.secretType || secret.type || "Secret"}</p>
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-4">
-                                <div className="flex items-center justify-between gap-3">
-                                  <div>
-                                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">Recorded code line</p>
-                                    <p className="mt-1 text-xs text-zinc-500">
-                                      {snippetLine?.num ? `Saved context from line ${snippetLine.num}` : "Saved context unavailable for this older record"}
-                                    </p>
-                                  </div>
-                                  <span className="inline-flex items-center gap-2 rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-[11px] font-semibold text-blue-300">
-                                    <Link2 className="h-3.5 w-3.5" />
-                                    {snippetLine?.num ? `L${snippetLine.num}` : secret.line != null ? `L${secret.line}` : "Line N/A"}
-                                  </span>
-                                </div>
-
-                                {snippetLine ? (
-                                  <div className="mt-4 overflow-hidden rounded-lg border border-zinc-800 bg-[#0b1120]">
-                                    <div className="flex items-start gap-3 px-4 py-3">
-                                      <span className="pt-0.5 text-[10px] font-mono text-blue-300">{snippetLine.num}</span>
-                                      <code className="whitespace-pre-wrap break-all font-mono text-sm leading-6 text-zinc-100">
-                                        {snippetLine.text}
-                                      </code>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="mt-4 rounded-lg border border-dashed border-zinc-700 bg-zinc-950/70 px-4 py-4 text-sm leading-6 text-zinc-400">
-                                    This saved finding does not include a code snippet yet. The record still preserves the file path, line, API type, author trace, and patch status so you can review it without scanning again.
-                                  </div>
-                                )}
-                              </div>
-
-                              <div className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-4">
-                                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                  <div>
-                                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">Who patched this</p>
-                                    <p className="mt-1 text-xs text-zinc-500">
-                                      Fix ownership recorded when this finding was marked resolved after patch verification.
-                                    </p>
-                                  </div>
-                                  <span
-                                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-semibold ${
-                                      secret.status === "FIXED"
-                                        ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
-                                        : "border-zinc-700 bg-zinc-950 text-zinc-300"
-                                    }`}
-                                  >
-                                    <ShieldCheck className="h-3.5 w-3.5" />
-                                    {secret.status === "FIXED" ? "Patch recorded" : "Not patched yet"}
-                                  </span>
-                                </div>
-
-                                <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
-                                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-4 py-4">
-                                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">Patched by</p>
-                                    <p className="mt-3 break-all text-sm font-medium text-zinc-100">
-                                      {secret.fixedByEmail || (secret.status === "FIXED" ? "Recorded as fixed" : "Pending")}
-                                    </p>
-                                  </div>
-                                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-4 py-4">
-                                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">Patched at</p>
-                                    <p className="mt-3 text-sm font-medium text-zinc-100">
-                                      {secret.fixedAt ? formatDate(secret.fixedAt) : secret.status === "FIXED" ? "Recorded" : "N/A"}
-                                    </p>
-                                  </div>
-                                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-4 py-4">
-                                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">Resolution state</p>
-                                    <p className="mt-3 text-sm font-medium text-zinc-100">{secret.status || "OPEN"}</p>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="w-full xl:max-w-[280px] space-y-3">
-                              <div className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-4">
-                                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">Author trace</p>
-                                <p className="mt-3 text-sm font-medium text-zinc-100">{secret.author || "Unknown"}</p>
-                                <p className="mt-1 break-all text-sm text-zinc-400">{secret.authorEmail || secret.email || "N/A"}</p>
-                              </div>
-                              <div className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-4">
-                                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">Record health</p>
-                                <div className="mt-3 space-y-3 text-sm">
-                                  <div className="flex items-center justify-between gap-3">
-                                    <span className="text-zinc-500">Snippet</span>
-                                    <span className={snippetLine ? "text-emerald-300" : "text-zinc-400"}>
-                                      {snippetLine ? "Stored" : "Not stored"}
-                                    </span>
-                                  </div>
-                                  <div className="flex items-center justify-between gap-3">
-                                    <span className="text-zinc-500">Patched by</span>
-                                    <span className="text-right text-zinc-300 break-all">
-                                      {secret.fixedByEmail || (secret.status === "FIXED" ? "Recorded as fixed" : "Pending")}
-                                    </span>
-                                  </div>
-                                  <div className="flex items-center justify-between gap-3">
-                                    <span className="text-zinc-500">Updated</span>
-                                    <span className="text-right text-zinc-300">{formatDate(secret.fixedAt || secret.commitTime)}</span>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {detailsLoading && (
-                <div className={`${CARD} text-sm text-zinc-400`}>
-                  Loading repository findings...
-                </div>
-              )}
-
-              <div className="flex justify-end gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setSelectedRepo(null)}
-                  className="px-4 py-2 rounded-md border border-zinc-700 bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
-                >
-                  Close
-                </button>
-                <button
-                  type="button"
-                  onClick={() => window.open(selectedRepo.gitUrl, "_blank")}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-500 text-white"
-                >
-                  Open Repository
-                  <ExternalLink className="w-4 h-4" />
-                </button>
-              </div>
+            {/* Modal Actions */}
+            <div className="flex justify-end gap-4 mt-8 pt-6 border-t border-[#1E293B]">
+              <button 
+                className="px-5 py-2.5 rounded-lg bg-[#1E293B] hover:bg-[#2A374A] text-white text-sm font-semibold transition-colors" 
+                onClick={() => setSelectedRepo(null)}
+              >
+                Close Panel
+              </button>
+              <button 
+                className="px-5 py-2.5 rounded-lg bg-[#0ae8f0] text-[#0B1120] hover:bg-white text-sm font-bold transition-colors flex items-center gap-2" 
+                onClick={() => window.open(selectedRepo.gitUrl, "_blank")}
+              >
+                Open in GitHub <FiExternalLink />
+              </button>
             </div>
           </div>
         </div>
       )}
     </div>
   );
-}
+};
+
+export default Report;

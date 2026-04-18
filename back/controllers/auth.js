@@ -27,45 +27,6 @@ function slugify(value) {
     .slice(0, 48);
 }
 
-function buildResolvedInviteEmailSet(memberList, invites = []) {
-  const resolvedEmails = new Set(
-    memberList
-      .map((member) => normalizeEmail(member.email))
-      .filter(Boolean)
-  );
-
-  (invites || []).forEach((invite) => {
-    if (invite.status === "ACCEPTED") {
-      const inviteEmail = normalizeEmail(invite.email);
-      if (inviteEmail) resolvedEmails.add(inviteEmail);
-    }
-  });
-
-  return resolvedEmails;
-}
-
-function pushPendingInvites(memberList, invites = []) {
-  const resolvedEmails = buildResolvedInviteEmailSet(memberList, invites);
-
-  (invites || [])
-    .filter((invite) => invite.status === "PENDING")
-    .forEach((invite) => {
-      const inviteEmail = normalizeEmail(invite.email);
-      if (!inviteEmail || resolvedEmails.has(inviteEmail)) {
-        return;
-      }
-
-      memberList.push({
-        _id: `invite:${invite._id}`,
-        name: null,
-        email: invite.email,
-        role: invite.role,
-        status: "INVITED",
-        invitedAt: invite.invitedAt || null,
-      });
-    });
-}
-
 async function hashPassword(password) {
   return bcrypt.hash(password, SALT_ROUNDS);
 }
@@ -76,38 +37,6 @@ async function verifyPassword(inputPassword, storedValue) {
     return bcrypt.compare(inputPassword, storedValue);
   }
   return String(inputPassword) === String(storedValue);
-}
-
-async function resolveOrganizationMembers(organization) {
-  const dbUsers = await User.find({ organizationId: organization._id })
-    .select("name email role isActive createdAt updatedAt")
-    .lean();
-
-  const sourceMembers =
-    dbUsers.length > 0
-      ? dbUsers
-      : (organization.members || []).map((member) => ({
-          _id: member._id,
-          name: member.name || null,
-          email: member.email,
-          role: member.role,
-          isActive: member.isActive,
-          createdAt: member.createdAt,
-          updatedAt: member.updatedAt,
-        }));
-
-  const memberList = sourceMembers.map((member) => ({
-    _id: member._id,
-    name: member.name || null,
-    email: member.email,
-    role: member.role,
-    status: member.isActive === false ? "INACTIVE" : "ACTIVE",
-    invitedAt: member.createdAt || null,
-  }));
-
-  const activeEmails = new Set(memberList.map((member) => normalizeEmail(member.email)).filter(Boolean));
-
-  return { memberList, activeEmails };
 }
 
 async function buildOrganizationSummary(organizationId, authUser) {
@@ -143,15 +72,31 @@ async function buildOrganizationSummary(organizationId, authUser) {
   ]);
 
   const summaryMap = Object.fromEntries(vulnerabilitySummary.map((row) => [row._id, row.count]));
-  const { memberList } = await resolveOrganizationMembers(organization);
-  pushPendingInvites(memberList, organization.invites || []);
+  const memberList = (organization.members || []).map((member) => ({
+    _id: member._id,
+    name: member.name || null,
+    email: member.email,
+    role: member.role,
+    status: member.isActive === false ? "INACTIVE" : "ACTIVE",
+    invitedAt: member.createdAt || null,
+  }));
+
+  const pendingInvites = (organization.invites || []).filter((invite) => invite.status === "PENDING");
+  pendingInvites.forEach((invite) => {
+    memberList.push({
+      _id: `invite:${invite._id}`,
+      name: null,
+      email: invite.email,
+      role: invite.role,
+      status: "INVITED",
+      invitedAt: invite.invitedAt || null,
+    });
+  });
 
   return {
     _id: organization._id,
     name: organization.name,
     slug: organization.slug,
-    createdAt: organization.createdAt || null,
-    updatedAt: organization.updatedAt || null,
     owner: organization.owner
       ? {
           _id: organization.owner._id,
@@ -169,9 +114,6 @@ async function buildOrganizationSummary(organizationId, authUser) {
       fixed: summaryMap.FIXED || 0,
       ignored: summaryMap.IGNORED || 0,
       repos: repoCount.length,
-      activeMembers: memberList.filter((member) => member.status === "ACTIVE").length,
-      pendingInvites: (organization.invites || []).filter((invite) => invite.status === "PENDING").length,
-      developers: memberList.filter((member) => member.role === "EMPLOYEE").length,
     },
   };
 }
@@ -188,77 +130,6 @@ async function buildAuthResponse(user) {
     organization,
     repositories,
   };
-}
-
-async function acceptPendingInviteForEmail(email, password) {
-  const organization = await Organization.findOne({
-    invites: {
-      $elemMatch: {
-        email,
-        status: "PENDING",
-      },
-    },
-  });
-
-  if (!organization) {
-    return null;
-  }
-
-  const pendingInvites = (organization.invites || []).filter(
-    (invite) => normalizeEmail(invite.email) === email && invite.status === "PENDING"
-  );
-
-  if (pendingInvites.length > 1) {
-    throw new Error("MULTIPLE_PENDING_INVITES");
-  }
-
-  const invite = pendingInvites[0];
-  if (!invite) {
-    return null;
-  }
-
-  let user = await User.findOne({ email });
-  if (user && user.organizationId && String(user.organizationId) !== String(organization._id)) {
-    throw new Error("INVITE_EMAIL_ALREADY_USED");
-  }
-
-  if (!user) {
-    user = await User.create({
-      name: null,
-      email,
-      password: await hashPassword(password),
-      role: "EMPLOYEE",
-      organizationId: organization._id,
-      invitedBy: invite.invitedBy || organization.owner,
-      userType: "developer",
-      isActive: true,
-    });
-  } else {
-    user.password = await hashPassword(password);
-    user.role = "EMPLOYEE";
-    user.organizationId = organization._id;
-    user.invitedBy = invite.invitedBy || organization.owner;
-    user.userType = "developer";
-    user.isActive = true;
-    await user.save();
-  }
-
-  const acceptedAt = new Date();
-  await Organization.updateOne(
-    { _id: organization._id },
-    {
-      $addToSet: { members: user._id },
-      $set: {
-        "invites.$[invite].status": "ACCEPTED",
-        "invites.$[invite].acceptedAt": acceptedAt,
-      },
-    },
-    {
-      arrayFilters: [{ "invite.email": email }],
-    }
-  );
-
-  return User.findById(user._id);
 }
 
 async function register(req, res) {
@@ -329,33 +200,12 @@ async function login(req, res) {
   try {
     const email = normalizeEmail(req.body.email);
     const password = String(req.body.password || "");
-    const requestedRole = String(req.body.role || "").trim().toUpperCase();
 
     if (!email || !password) {
       return res.status(400).json({ success: false, message: "Email and password are required." });
     }
 
-    let user = await User.findOne({ email });
-    if ((!user || user.isActive === false) && requestedRole === "EMPLOYEE") {
-      try {
-        user = await acceptPendingInviteForEmail(email, password);
-      } catch (inviteError) {
-        if (inviteError.message === "MULTIPLE_PENDING_INVITES") {
-          return res.status(409).json({
-            success: false,
-            message: "Multiple pending invites were found for this email. Please use the latest invite link or ask the organization owner to resend the invite.",
-          });
-        }
-        if (inviteError.message === "INVITE_EMAIL_ALREADY_USED") {
-          return res.status(409).json({
-            success: false,
-            message: "This invited email is already attached to another organization.",
-          });
-        }
-        throw inviteError;
-      }
-    }
-
+    const user = await User.findOne({ email });
     if (!user || user.isActive === false) {
       return res.status(401).json({ success: false, message: "Invalid email or password." });
     }
@@ -480,20 +330,13 @@ async function acceptInvite(req, res) {
       await user.save();
     }
 
-    const acceptedAt = new Date();
-    await Organization.updateOne(
-      { _id: organization._id },
-      {
-        $addToSet: { members: user._id },
-        $set: {
-          "invites.$[invite].status": "ACCEPTED",
-          "invites.$[invite].acceptedAt": acceptedAt,
-        },
-      },
-      {
-        arrayFilters: [{ "invite.email": email }],
-      }
-    );
+    const memberIds = new Set((organization.members || []).map((id) => String(id)));
+    if (!memberIds.has(String(user._id))) {
+      organization.members.push(user._id);
+    }
+    invite.status = "ACCEPTED";
+    invite.acceptedAt = new Date();
+    await organization.save();
 
     const tokenValue = createTokenForUser(user);
     const payload = await buildAuthResponse(user);
@@ -580,14 +423,7 @@ async function inviteEmployee(req, res) {
       to: email,
       organizationName: organization.name,
       inviteLink,
-      role,
     });
-
-    const message = delivery.delivered
-      ? "Invite sent successfully."
-      : delivery.skipped
-        ? "Invite created, but email delivery is not configured. Share the invite link manually or configure SMTP."
-        : "Invite created, but email delivery failed. Share the invite link manually and verify SMTP credentials.";
 
     return res.status(201).json({
       success: true,
@@ -598,7 +434,9 @@ async function inviteEmployee(req, res) {
         inviteLink,
       },
       delivery,
-      message,
+      message: delivery.delivered
+        ? "Invite sent successfully."
+        : "Invite created, but email delivery was skipped or failed.",
     });
   } catch (error) {
     console.error("Invite employee failed:", error);
