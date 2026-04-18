@@ -1582,7 +1582,7 @@ export default function Analysis() {
                                 </div>
                               </div>
 
-                              <div className="xl:w-[280px] shrink-0">
+                              <div className="xl:w-[280px] mt-10 shrink-0">
                                 <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4">
                                   <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 font-bold">Exposed Secret</p>
                                   <div className="mt-3 rounded-xl border border-rose-500/15 bg-rose-500/8 px-3 py-3">
