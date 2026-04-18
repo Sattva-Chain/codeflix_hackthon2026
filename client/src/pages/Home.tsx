@@ -264,7 +264,12 @@ const Home: React.FC = () => {
               <h1 className="mt-8 text-4xl font-semibold leading-[0.98] tracking-tight text-white sm:text-6xl xl:text-[5.5rem]">
                 Detect exposed secrets.
                 <span className="block text-zinc-300">Assign fixes fast.</span>
-                <span className="block text-white">Track every remediation.</span>
+                <span className="block text-white">
+                  Track every{" "}
+                  <span className="inline-block rounded-[0.18em] border border-blue-400/35 px-[0.18em] text-blue-300 shadow-[0_0_0_1px_rgba(96,165,250,0.08)]">
+                    remediation.
+                  </span>
+                </span>
               </h1>
 
               <p className="mx-auto mt-8 max-w-3xl text-base leading-8 text-zinc-400 sm:text-xl">
