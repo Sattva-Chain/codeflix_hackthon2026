@@ -79,7 +79,7 @@ app.use(
 );
 
 mongoose
-  .connect("mongodb+srv://kr551344:o43CV2CxzEyrBKVj@cluster0.iabyjku.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+  .connect("mongodb+srv://kr551344_db_user:ErqBwOEVmaJC2oPF@cluster1.uelsejd.mongodb.net/?retryWrites=true&w=majority&appName=cluster1")
   .then(async () => {
     console.log("✅ MongoDB Connected");
     await ensureRepositoryIndexes();
@@ -136,6 +136,25 @@ const ignorePatterns = [
   "README.md",
   "client/public/vite.svg"
 ];
+
+function shouldIgnoreGeneratedFile(filePath) {
+  const normalized = String(filePath || "").replace(/\\/g, "/").toLowerCase();
+  if (!normalized) return true;
+
+  if (ignorePatterns.some((pattern) => normalized.includes(String(pattern).toLowerCase()))) {
+    return true;
+  }
+
+  if (/vite\.config\.[^/]*\.timestamp-\d+-[a-z0-9]+\.mjs$/i.test(normalized)) {
+    return true;
+  }
+
+  if (/\.timestamp-\d+-[a-z0-9]+\.mjs$/i.test(normalized) && normalized.includes("vite.config")) {
+    return true;
+  }
+
+  return false;
+}
 
 async function runTrufflehog(scanPath) {
   const args = ["--json", `file://${scanPath}`];
@@ -811,7 +830,7 @@ function assignSnippetsBasenamePass(repoRoot, pendingRows) {
 
   function shouldIgnoreRel(relUnix) {
     if (!relUnix) return true;
-    return ignorePatterns.some((p) => relUnix.includes(p));
+    return shouldIgnoreGeneratedFile(relUnix);
   }
 
   let filesChecked = 0;
@@ -906,7 +925,7 @@ function assignSnippetsByRepoWalk(repoRoot, pendingRows) {
 
   function shouldIgnoreRel(relUnix) {
     if (!relUnix) return true;
-    return ignorePatterns.some((p) => relUnix.includes(p));
+    return shouldIgnoreGeneratedFile(relUnix);
   }
 
   let filesChecked = 0;
@@ -1111,7 +1130,7 @@ async function buildScanResponse(scanPath, isGitRepo, extraMeta = {}, persistenc
   let findings = await runTrufflehog(scanPath);
   findings = findings.filter((f) => {
     const file = getFindingFileKey(f);
-    return !ignorePatterns.some((pattern) => file.includes(pattern));
+    return !shouldIgnoreGeneratedFile(file);
   });
   findings = filterEntropyFalsePositives(findings, scanPath);
 
@@ -1297,7 +1316,7 @@ app.post("/scan-url", async (req, res) => {
     // ✅ Filter ignored files
     findings = findings.filter((f) => {
       const file = getFindingFileKey(f);
-      return !ignorePatterns.some((pattern) => file.includes(pattern));
+      return !shouldIgnoreGeneratedFile(file);
     });
 
     findings = filterEntropyFalsePositives(findings, clonePath);
@@ -1338,7 +1357,7 @@ app.post("/scan-zip", upload.single("zipfile"), async (req, res) => {
     // ✅ Filter ignored files
     findings = findings.filter((f) => {
       const file = getFindingFileKey(f);
-      return !ignorePatterns.some((pattern) => file.includes(pattern));
+      return !shouldIgnoreGeneratedFile(file);
     });
 
     findings = filterEntropyFalsePositives(findings, extractPath);

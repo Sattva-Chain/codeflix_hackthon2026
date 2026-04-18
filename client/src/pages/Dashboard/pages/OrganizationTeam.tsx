@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import axios from "axios";
 import toast from "react-hot-toast";
-import { Copy, FolderGit2, Link2, Mail, Send, ShieldCheck, Trash2, UserPlus, Users, X } from "lucide-react";
+import { Bot, Cloud, Copy, Database, FolderGit2, Github, KeyRound, Link2, Mail, Send, ShieldCheck, Sparkles, Trash2, UserPlus, Users, X } from "lucide-react";
 import { userAuth } from "../../../context/Auth";
 import type { OrganizationMember } from "../../../context/Auth";
 
@@ -31,8 +31,49 @@ type RepoVulnerability = {
   authorEmail?: string | null;
   commitTime?: string | null;
   commitHash?: string | null;
+  snippet?: {
+    lines?: { num: number; text: string }[];
+    highlightLine?: number | null;
+  } | null;
   status?: string | null;
+  fixedByEmail?: string | null;
+  fixedAt?: string | null;
 };
+
+function getSecretTypeMeta(secretType?: string | null) {
+  const value = String(secretType || "").toLowerCase();
+
+  if (value.includes("redis")) {
+    return { label: "Redis", tone: "text-rose-300 border-rose-500/20 bg-rose-500/10", icon: Database };
+  }
+  if (value.includes("mongo")) {
+    return { label: "MongoDB", tone: "text-emerald-300 border-emerald-500/20 bg-emerald-500/10", icon: Database };
+  }
+  if (value.includes("aws")) {
+    return { label: "AWS", tone: "text-amber-300 border-amber-500/20 bg-amber-500/10", icon: Cloud };
+  }
+  if (value.includes("gcp") || value.includes("google")) {
+    return { label: "GCP", tone: "text-sky-300 border-sky-500/20 bg-sky-500/10", icon: Cloud };
+  }
+  if (value.includes("gemini")) {
+    return { label: "Gemini", tone: "text-violet-300 border-violet-500/20 bg-violet-500/10", icon: Sparkles };
+  }
+  if (value.includes("github")) {
+    return { label: "GitHub", tone: "text-zinc-200 border-zinc-700 bg-zinc-800/60", icon: Github };
+  }
+  if (value.includes("openai")) {
+    return { label: "OpenAI", tone: "text-emerald-300 border-emerald-500/20 bg-emerald-500/10", icon: Bot };
+  }
+
+  return { label: "Credential", tone: "text-blue-300 border-blue-500/20 bg-blue-500/10", icon: KeyRound };
+}
+
+function getHighlightedSnippet(entry: RepoVulnerability) {
+  const lines = entry.snippet?.lines || [];
+  const highlightLine = entry.snippet?.highlightLine;
+  if (!lines.length) return null;
+  return lines.find((line) => line.num === highlightLine) || lines[0] || null;
+}
 
 export default function OrganizationTeam() {
   const { token, organization, role, refreshUser } = userAuth()!;
@@ -284,33 +325,52 @@ export default function OrganizationTeam() {
         })}
       </section>
 
-      <section className="grid grid-cols-1 xl:grid-cols-[0.9fr_1.1fr] gap-4">
+      <section className="flex flex-col gap-4">
         <div className={CARD}>
-          <div className="flex items-center gap-2 mb-5">
-            <UserPlus className="w-4 h-4 text-blue-300" />
-            <h2 className="text-sm font-semibold text-zinc-100">Invite employee</h2>
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
+            <div className="max-w-xl">
+              <div className="flex items-center gap-2 mb-3">
+                <UserPlus className="w-4 h-4 text-blue-300" />
+                <h2 className="text-sm font-semibold text-zinc-100">Invite employee</h2>
+              </div>
+              <p className="text-sm text-zinc-400 leading-6">
+                Invite a developer into your organization workspace. The backend handles token validation,
+                password setup, and organization membership automatically.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+              <div className="min-w-[140px] rounded-lg border border-zinc-800 bg-zinc-950/50 px-4 py-3">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">Pending invites</p>
+                <p className="mt-2 text-lg font-semibold text-orange-300">{stats.invited}</p>
+              </div>
+              <div className="min-w-[140px] rounded-lg border border-zinc-800 bg-zinc-950/50 px-4 py-3">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">Active employees</p>
+                <p className="mt-2 text-lg font-semibold text-emerald-300">{stats.active}</p>
+              </div>
+            </div>
           </div>
 
-          <form className="space-y-4" onSubmit={handleInvite}>
-            <div>
+          <form className="mt-6 grid grid-cols-1 xl:grid-cols-[1.3fr_0.9fr_auto] gap-4 items-end" onSubmit={handleInvite}>
+            <div className="xl:col-span-1">
               <label className="text-xs uppercase tracking-[0.2em] text-zinc-500 font-bold">Employee email</label>
               <input
                 type="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 placeholder="employee@company.com"
-                className="w-full mt-2 p-3 bg-zinc-950 border border-zinc-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+                className="w-full mt-2 p-3.5 bg-zinc-950 border border-zinc-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
               />
             </div>
 
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 px-4 py-3 text-sm text-zinc-400 leading-6">
-              Invites create employee-only access. The backend handles token validation, password setup, and organization membership.
+              Employees receive organization access only. Invite links stay secure even if email delivery is unavailable.
             </div>
 
             <button
               type="submit"
               disabled={sending}
-              className="inline-flex w-full items-center justify-center gap-2 px-5 py-3 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white font-semibold"
+              className="inline-flex w-full xl:w-auto items-center justify-center gap-2 px-6 py-3.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white font-semibold"
             >
               <Send className="w-4 h-4" />
               {sending ? "Sending invite..." : "Send invite"}
@@ -319,13 +379,13 @@ export default function OrganizationTeam() {
 
           {lastInviteResult && (
             <div
-              className={`mt-4 rounded-lg border p-4 ${
+              className={`mt-5 rounded-lg border p-4 ${
                 lastInviteResult.delivered
                   ? "border-emerald-500/20 bg-emerald-500/10"
                   : "border-orange-500/20 bg-orange-500/10"
               }`}
             >
-              <div className="flex items-start justify-between gap-3">
+              <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-zinc-100">
                     {lastInviteResult.delivered ? "Invite email delivered" : "Invite ready to share"}
@@ -333,7 +393,7 @@ export default function OrganizationTeam() {
                   <p className="text-xs text-zinc-400 mt-1">{lastInviteResult.email}</p>
                 </div>
                 <span
-                  className={`px-2.5 py-1 rounded-full border text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                  className={`w-fit px-2.5 py-1 rounded-full border text-[10px] font-semibold uppercase tracking-[0.18em] ${
                     lastInviteResult.delivered
                       ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
                       : "border-orange-500/20 bg-orange-500/10 text-orange-300"
@@ -599,11 +659,149 @@ export default function OrganizationTeam() {
                   </p>
                 </div>
 
-                <div className="overflow-x-auto">
+                <div className="p-5 space-y-4">
+                  {repoDetailsModal.vulnerabilities.map((entry) => {
+                    const reveal = !!revealedSecrets[entry._id];
+                    const displaySecret = reveal
+                      ? entry.secret || entry.maskedSecret || "N/A"
+                      : entry.maskedSecret || entry.secret || "N/A";
+                    const snippetLine = getHighlightedSnippet(entry);
+                    const serviceMeta = getSecretTypeMeta(entry.secretType);
+                    const ServiceIcon = serviceMeta.icon;
+                    const patchedByLabel =
+                      entry.status === "FIXED"
+                        ? entry.fixedByEmail
+                          ? `${entry.fixedByEmail}${entry.fixedAt ? ` · ${new Date(entry.fixedAt).toLocaleString()}` : ""}`
+                          : entry.fixedAt
+                            ? `Recorded · ${new Date(entry.fixedAt).toLocaleString()}`
+                            : "Recorded"
+                        : "Still open";
+
+                    return (
+                      <div key={`card-${entry._id}`} className="rounded-2xl border border-zinc-800 bg-zinc-950/70 overflow-hidden shadow-[0_10px_30px_rgba(0,0,0,0.18)]">
+                        <div className="p-5">
+                          <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-5">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h4 className="text-base font-semibold text-zinc-100 break-all">{entry.file || "Unknown file"}</h4>
+                                <span className="inline-flex items-center rounded-full border border-blue-500/20 bg-blue-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-blue-300">
+                                  {entry.line != null ? `Line #${entry.line}` : "Line unavailable"}
+                                </span>
+                                <span
+                                  className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.18em] ${
+                                    entry.status === "FIXED"
+                                      ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                                      : "border-amber-500/20 bg-amber-500/10 text-amber-300"
+                                  }`}
+                                >
+                                  {entry.status || "OPEN"}
+                                </span>
+                              </div>
+
+                              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+                                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 font-bold">Type / API</p>
+                                  <div className="mt-3 flex flex-col gap-2">
+                                    <span className="text-sm font-semibold text-blue-300">{entry.secretType || "Secret"}</span>
+                                    <span className={`inline-flex w-fit items-center gap-2 px-2.5 py-1 rounded-full border text-[10px] font-bold uppercase tracking-[0.18em] ${serviceMeta.tone}`}>
+                                      <ServiceIcon className="w-3.5 h-3.5" />
+                                      {serviceMeta.label}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+                                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 font-bold">Key exposure</p>
+                                  <div className="mt-3 space-y-3">
+                                    <div className="rounded-xl border border-rose-500/15 bg-rose-500/8 px-3 py-3">
+                                      <p className="font-mono text-xs text-rose-300 break-all">{displaySecret}</p>
+                                    </div>
+                                    {(entry.secret || entry.maskedSecret) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setRevealedSecrets((prev) => ({ ...prev, [entry._id]: !prev[entry._id] }))}
+                                        className="text-[11px] font-semibold text-blue-300 hover:text-blue-200"
+                                      >
+                                        {reveal ? "Hide key" : "Reveal key"}
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+                                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 font-bold">Author trace</p>
+                                  <div className="mt-3 space-y-1 text-sm">
+                                    <p className="text-zinc-200">{entry.author || "Unknown"}</p>
+                                    <p className="text-zinc-500 font-mono text-xs break-all">{entry.authorEmail || "N/A"}</p>
+                                  </div>
+                                </div>
+
+                                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+                                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 font-bold">Commit + Fix</p>
+                                  <div className="mt-3 space-y-2 text-sm text-zinc-400">
+                                    <p>{entry.commitHash ? entry.commitHash.slice(0, 12) : "Commit N/A"}</p>
+                                    <p>{entry.commitTime ? new Date(entry.commitTime).toLocaleString() : "Commit time N/A"}</p>
+                                    <div className="pt-2 border-t border-zinc-800 text-[11px] text-zinc-500">
+                                      <p className="uppercase tracking-[0.18em] text-zinc-600 mb-1">Patched By</p>
+                                      <p className="text-zinc-300 normal-case tracking-normal break-all">{patchedByLabel}</p>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="border-t border-zinc-800 bg-zinc-950/80 p-5">
+                          <div className="flex items-center justify-between gap-3 mb-3">
+                            <div>
+                              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 font-bold">Code Context</p>
+                              <p className="text-xs text-zinc-500 mt-1">
+                                {snippetLine
+                                  ? "Last stored code line where the key was detected."
+                                  : "Older stored finding without saved code context."}
+                              </p>
+                            </div>
+                            <span className="text-[10px] font-mono text-blue-300">
+                              {snippetLine?.num ? `L${snippetLine.num}` : entry.line != null ? `L${entry.line}` : "Line N/A"}
+                            </span>
+                          </div>
+
+                          {snippetLine ? (
+                            <div className="rounded-xl border border-zinc-800 bg-[#101317] overflow-hidden">
+                              <div className="px-4 py-2 border-b border-zinc-800 bg-zinc-950/90 text-[10px] uppercase tracking-[0.18em] text-zinc-500 font-bold">
+                                Open code line
+                              </div>
+                              <pre className="px-4 py-4 text-[12px] leading-6 text-zinc-200 font-mono whitespace-pre-wrap break-words">
+                                {snippetLine.text}
+                              </pre>
+                            </div>
+                          ) : (
+                            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-4 text-sm text-zinc-400 leading-6">
+                              The saved record does not include a snippet for this older finding yet.
+                              {entry.line != null
+                                ? ` The last known flagged line is ${entry.line}.`
+                                : " The line number was not stored for this older record."}
+                              {" "}Run a fresh scan to store the full code context for future reviews.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {!repoDetailsModal.vulnerabilities.length && (
+                    <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 px-4 py-10 text-center text-sm text-zinc-500">
+                      No stored vulnerability details are available for this repository yet.
+                    </div>
+                  )}
+                </div>
+
+                <div className="hidden overflow-x-auto">
                   <table className="w-full text-left">
                     <thead className="bg-zinc-950/30">
                       <tr>
-                        {["File", "Line", "Type / API", "Key", "Severity", "Author", "Commit", "Status"].map((heading) => (
+                        {["File", "Line", "Type / API", "Key", "Severity", "Author", "Commit", "Status", "Patched By"].map((heading) => (
                           <th key={heading} className="px-4 py-3 text-xs uppercase tracking-[0.18em] text-zinc-500">
                             {heading}
                           </th>
@@ -616,6 +814,9 @@ export default function OrganizationTeam() {
                         const displaySecret = reveal
                           ? entry.secret || entry.maskedSecret || "N/A"
                           : entry.maskedSecret || entry.secret || "N/A";
+                        const snippetLine = getHighlightedSnippet(entry);
+                        const serviceMeta = getSecretTypeMeta(entry.secretType);
+                        const ServiceIcon = serviceMeta.icon;
 
                         return (
                           <tr key={entry._id} className="hover:bg-zinc-800/20 transition-colors">
@@ -624,7 +825,10 @@ export default function OrganizationTeam() {
                             <td className="px-4 py-4">
                               <div className="flex flex-col gap-2">
                                 <span className="text-sm font-semibold text-blue-300">{entry.secretType || "Secret"}</span>
-                                <span className="text-[11px] text-zinc-500">API/service detector</span>
+                                <span className={`inline-flex w-fit items-center gap-2 px-2.5 py-1 rounded-full border text-[10px] font-bold uppercase tracking-[0.18em] ${serviceMeta.tone}`}>
+                                  <ServiceIcon className="w-3.5 h-3.5" />
+                                  {serviceMeta.label}
+                                </span>
                               </div>
                             </td>
                             <td className="px-4 py-4">
@@ -646,6 +850,22 @@ export default function OrganizationTeam() {
                               <div className="space-y-1 text-sm">
                                 <p className="text-zinc-200">{entry.author || "Unknown"}</p>
                                 <p className="text-zinc-500 font-mono text-xs">{entry.authorEmail || "N/A"}</p>
+                                {snippetLine && (
+                                  <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950/70 overflow-hidden">
+                                    <div className="px-3 py-2 border-b border-zinc-800 bg-zinc-950/80 flex items-center justify-between gap-3">
+                                      <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 font-bold">Open code line</p>
+                                      <span className="text-[10px] font-mono text-blue-300">L{snippetLine.num}</span>
+                                    </div>
+                                    <pre className="px-3 py-3 text-[11px] leading-6 text-zinc-300 font-mono whitespace-pre-wrap break-words">
+                                      {snippetLine.text}
+                                    </pre>
+                                  </div>
+                                )}
+                                {!snippetLine && (
+                                  <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-[11px] text-zinc-500">
+                                    Code context not stored for this older finding yet. The flagged location is line {entry.line ?? "N/A"}.
+                                  </div>
+                                )}
                               </div>
                             </td>
                             <td className="px-4 py-4">
@@ -655,12 +875,21 @@ export default function OrganizationTeam() {
                               </div>
                             </td>
                             <td className="px-4 py-4 text-sm text-zinc-300">{entry.status || "OPEN"}</td>
+                            <td className="px-4 py-4 text-sm text-zinc-400">
+                              {entry.status === "FIXED"
+                                ? entry.fixedByEmail
+                                  ? `${entry.fixedByEmail}${entry.fixedAt ? ` · ${new Date(entry.fixedAt).toLocaleString()}` : ""}`
+                                  : entry.fixedAt
+                                    ? new Date(entry.fixedAt).toLocaleString()
+                                    : "Recorded"
+                                : "—"}
+                            </td>
                           </tr>
                         );
                       })}
                       {!repoDetailsModal.vulnerabilities.length && (
                         <tr>
-                          <td colSpan={8} className="px-4 py-8 text-center text-sm text-zinc-500">
+                          <td colSpan={9} className="px-4 py-8 text-center text-sm text-zinc-500">
                             No stored vulnerability details are available for this repository yet.
                           </td>
                         </tr>

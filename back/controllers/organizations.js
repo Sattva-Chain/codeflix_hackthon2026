@@ -13,18 +13,31 @@ function normalizeEmail(email) {
   return String(email || "").trim().toLowerCase();
 }
 
-function appendPendingInvites(memberList, invites = []) {
-  const activeEmails = new Set(
+function buildResolvedInviteEmailSet(memberList, invites = []) {
+  const resolvedEmails = new Set(
     memberList
       .map((member) => normalizeEmail(member.email))
       .filter(Boolean)
   );
 
+  (invites || []).forEach((invite) => {
+    if (invite.status === "ACCEPTED") {
+      const inviteEmail = normalizeEmail(invite.email);
+      if (inviteEmail) resolvedEmails.add(inviteEmail);
+    }
+  });
+
+  return resolvedEmails;
+}
+
+function appendPendingInvites(memberList, invites = []) {
+  const resolvedEmails = buildResolvedInviteEmailSet(memberList, invites);
+
   (invites || [])
     .filter((invite) => invite.status === "PENDING")
     .forEach((invite) => {
       const inviteEmail = normalizeEmail(invite.email);
-      if (!inviteEmail || activeEmails.has(inviteEmail)) {
+      if (!inviteEmail || resolvedEmails.has(inviteEmail)) {
         return;
       }
 
@@ -66,8 +79,7 @@ async function resolveOrganizationMembers(organization) {
     joinedAt: member.createdAt || null,
   }));
 
-  const activeEmails = new Set(members.map((member) => normalizeEmail(member.email)).filter(Boolean));
-  return { members, activeEmails };
+  return { members };
 }
 
 function buildOrgScope(req) {
@@ -152,11 +164,8 @@ async function getOrganizationMembers(req, res) {
       return res.status(404).json({ success: false, message: "Organization not found." });
     }
 
-    const { members, activeEmails } = await resolveOrganizationMembers(organization);
-    appendPendingInvites(
-      members,
-      (organization.invites || []).filter((invite) => !activeEmails.has(normalizeEmail(invite.email)))
-    );
+    const { members } = await resolveOrganizationMembers(organization);
+    appendPendingInvites(members, organization.invites || []);
 
     return res.json({
       success: true,

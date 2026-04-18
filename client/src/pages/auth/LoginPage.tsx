@@ -16,7 +16,7 @@ type LoginRole = (typeof LOGIN_TABS)[number]["key"];
 
 export default function LoginPage() {
   const navigate = useNavigate();
-  const { setSession, setToken } = userAuth()!;
+  const { setSession } = userAuth()!;
   const [role, setRole] = useState<LoginRole>("SOLO_DEVELOPER");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -67,6 +67,7 @@ export default function LoginPage() {
       const { data } = await axios.post(`${API_BASE_URL}/api/auth/login`, {
         email,
         password,
+        role,
       });
 
       if (data?.success && data?.token) {
@@ -76,33 +77,6 @@ export default function LoginPage() {
         return;
       }
     } catch (error: any) {
-      if (role === "ORG_OWNER" || role === "EMPLOYEE") {
-        try {
-          const fallbackRoute = role === "ORG_OWNER" ? "/api/orgLoginData" : "/api/loginStaff";
-          const fallbackBody =
-            role === "ORG_OWNER"
-              ? { emailId: email, pass: password }
-              : { emailId: email, pass: password };
-          const { data } = await axios.post(`${API_BASE_URL}${fallbackRoute}`, fallbackBody);
-          const token = data.tokens || data.tokenUser;
-          if (data.success && token) {
-            await setToken(token);
-            toast.success(data.message || "Logged in successfully.");
-            navigate("/Dashboard2", { replace: true });
-            return;
-          }
-          toast.error(data.message || "Unable to log in.");
-          return;
-        } catch (fallbackError: any) {
-          toast.error(
-            fallbackError?.response?.data?.message ||
-              error?.response?.data?.message ||
-              "Unable to log in."
-          );
-          return;
-        }
-      }
-
       toast.error(error?.response?.data?.message || "Unable to log in.");
       return;
     } finally {

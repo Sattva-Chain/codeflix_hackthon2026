@@ -1,5 +1,6 @@
 "use client";
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import axios from "axios";
 import { Pie, Bar } from "react-chartjs-2";
 import {
   Chart as ChartJS,
@@ -26,15 +27,20 @@ ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarEle
 
 const CARD = "rounded-lg border border-zinc-800 bg-zinc-900/70 p-5";
 const PANEL = "rounded-lg border border-zinc-800 bg-zinc-900/70 overflow-hidden";
+const API_BASE_URL = "http://localhost:3000";
 
 type RepoSecret = {
+  _id?: string;
   type?: string;
+  secretType?: string;
   file?: string;
   line?: number | string;
   author?: string | null;
   email?: string | null;
   authorEmail?: string | null;
   commitTime?: string | null;
+  status?: string | null;
+  severity?: string | null;
 };
 
 type RepoRecord = {
@@ -52,9 +58,10 @@ type RepoRecord = {
 };
 
 export default function Report() {
-  const { user, repo, company, role, organization } = userAuth() || {};
+  const { user, repo, company, role, organization, token } = userAuth() || {};
   const [selectedRepo, setSelectedRepo] = useState<RepoRecord | null>(null);
   const [repoSecrets, setRepoSecrets] = useState<RepoSecret[]>([]);
+  const [detailsLoading, setDetailsLoading] = useState(false);
   const modalRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -81,12 +88,58 @@ export default function Report() {
   const verifiedRepos = user?.VerifiedRepositories ?? 0;
   const unverifiedRepos = user?.UnverifiedRepositories ?? 0;
 
-  const openRepoDetails = (record: RepoRecord) => {
+  const openRepoDetails = async (record: RepoRecord) => {
     setSelectedRepo(record);
-    if (record.vulnerabilities) {
-      setRepoSecrets(Object.entries(record.vulnerabilities).flatMap(([file, findings]) => findings.map((finding) => ({ ...finding, file }))));
-    } else {
-      setRepoSecrets([]);
+    setRepoSecrets([]);
+    setDetailsLoading(true);
+
+    try {
+      if (token) {
+        const { data } = await axios.get(`${API_BASE_URL}/api/auth/vulnerabilities`, {
+          headers: { Authorization: `Bearer ${token}` },
+          params: {
+            repo: record.gitUrl,
+            branch: record.Branch || undefined,
+          },
+        });
+
+        if (data?.success) {
+          setRepoSecrets(
+            (data.vulnerabilities || []).map((entry: any) => ({
+              _id: entry._id,
+              type: entry.secretType || "Secret",
+              secretType: entry.secretType || "Secret",
+              file: entry.file || undefined,
+              line: entry.line ?? undefined,
+              author: entry.author || null,
+              email: entry.authorEmail || null,
+              authorEmail: entry.authorEmail || null,
+              commitTime: entry.commitTime || null,
+              status: entry.status || "OPEN",
+              severity: entry.severity || "MEDIUM",
+            }))
+          );
+          return;
+        }
+      }
+
+      if (record.vulnerabilities) {
+        setRepoSecrets(
+          Object.entries(record.vulnerabilities).flatMap(([file, findings]) =>
+            findings.map((finding) => ({ ...finding, file }))
+          )
+        );
+      }
+    } catch {
+      if (record.vulnerabilities) {
+        setRepoSecrets(
+          Object.entries(record.vulnerabilities).flatMap(([file, findings]) =>
+            findings.map((finding) => ({ ...finding, file }))
+          )
+        );
+      }
+    } finally {
+      setDetailsLoading(false);
     }
   };
 
@@ -214,30 +267,7 @@ export default function Report() {
       ? 1
       : 0;
 
-  if (role === "EMPLOYEE") {
-    return (
-      <div className="w-full flex flex-col gap-8 text-zinc-200 pb-4">
-        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-zinc-800">
-          <div>
-            <h1 className="text-xl font-semibold text-zinc-100 tracking-tight">Security Reports</h1>
-            <p className="text-sm text-zinc-500 mt-1">
-              Detailed repository reports are restricted for employees. Use vulnerabilities for your assigned visibility.
-            </p>
-          </div>
-        </header>
-
-        <div className={`${CARD} min-h-[260px] flex flex-col items-center justify-center text-center`}>
-          <AlertTriangle className="w-10 h-10 text-blue-400 mb-4" />
-          <h2 className="text-lg font-semibold text-zinc-100">Employee report access limited</h2>
-          <p className="text-sm text-zinc-500 mt-3 max-w-lg leading-6">
-            Repository-wide drill-downs are available to owners through team management and to solo developers in their own workspace.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if ((role === "ORG_OWNER" || (organization && role !== "SOLO_DEVELOPER")) && user) {
+  if (role === "ORG_OWNER" && user) {
     return (
       <div className="w-full flex flex-col gap-8 text-zinc-200 pb-4">
         <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-zinc-800">
@@ -303,7 +333,9 @@ export default function Report() {
             Repository verification metrics and drill-down details for your saved scan history.
           </p>
         </div>
-        <div className="text-sm text-zinc-500">{user.email}</div>
+        <div className="text-sm text-zinc-500">
+          {role === "EMPLOYEE" ? `${user.email} · employee workspace` : user.email}
+        </div>
       </header>
 
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -452,7 +484,7 @@ export default function Report() {
                 </div>
 
                 <div className={CARD}>
-                  <h3 className="text-sm font-medium text-zinc-200 mb-4">Secret summary</h3>
+                    <h3 className="text-sm font-medium text-zinc-200 mb-4">Secret summary</h3>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="rounded-lg border border-orange-500/20 bg-orange-500/10 px-4 py-4">
                       <p className="text-[11px] uppercase tracking-[0.18em] text-orange-200/80 font-bold">Open exposed keys</p>
@@ -472,7 +504,9 @@ export default function Report() {
                     <div>
                       <p className="text-xs uppercase tracking-[0.2em] text-zinc-500 font-bold">Exposure status</p>
                       <p className="text-sm text-zinc-400 mt-2 leading-6">
-                        {repoSecrets.length > 0
+                        {detailsLoading
+                          ? "Loading stored repository findings for this developer..."
+                          : repoSecrets.length > 0
                           ? `${selectedRepoTotalSecrets} exposed keys are currently tracked for this repository.`
                           : selectedRepoTotalSecrets > 0
                             ? `${selectedRepoTotalSecrets} exposed keys were detected in the last scan, but the detailed per-file breakdown is not available in this saved report yet.`
@@ -483,7 +517,7 @@ export default function Report() {
                 </div>
               </div>
 
-              {repoSecrets.length > 0 && (
+              {!detailsLoading && repoSecrets.length > 0 && (
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                   <div className={CARD}>
                     <h3 className="text-sm font-medium text-zinc-200 mb-4">By secret type</h3>
@@ -500,7 +534,7 @@ export default function Report() {
                 </div>
               )}
 
-              {repoSecrets.length > 0 && (
+              {!detailsLoading && repoSecrets.length > 0 && (
                 <div className={PANEL}>
                   <div className="px-5 py-4 border-b border-zinc-800 bg-zinc-950/40">
                     <h3 className="text-sm font-semibold text-zinc-100">Stored findings</h3>
@@ -509,7 +543,7 @@ export default function Report() {
                     <table className="w-full text-left">
                       <thead className="bg-zinc-950/30">
                         <tr>
-                          {["Type", "File", "Line", "Author", "Email", "Commit Time"].map((cell) => (
+                          {["Type", "File", "Line", "Author", "Email", "Severity", "Status", "Commit Time"].map((cell) => (
                             <th key={cell} className="px-4 py-3 text-xs uppercase tracking-[0.18em] text-zinc-500">
                               {cell}
                             </th>
@@ -519,19 +553,27 @@ export default function Report() {
                       <tbody className="divide-y divide-zinc-800">
                         {repoSecrets.map((secret, index) => (
                           <tr key={`${secret.file}-${secret.line}-${index}`} className="hover:bg-zinc-800/20 transition-colors">
-                            <td className="px-4 py-4 text-sm text-blue-300">{secret.type || "Secret"}</td>
+                            <td className="px-4 py-4 text-sm text-blue-300">{secret.secretType || secret.type || "Secret"}</td>
                             <td className="px-4 py-4 text-sm text-zinc-300">{secret.file || "N/A"}</td>
                             <td className="px-4 py-4 text-sm text-zinc-400">{secret.line ?? "N/A"}</td>
                             <td className="px-4 py-4 text-sm text-zinc-300">{secret.author || "Unknown"}</td>
                             <td className="px-4 py-4 text-sm text-zinc-400 font-mono">
                               {secret.authorEmail || secret.email || "N/A"}
                             </td>
+                            <td className="px-4 py-4 text-sm text-zinc-300">{secret.severity || "MEDIUM"}</td>
+                            <td className="px-4 py-4 text-sm text-zinc-300">{secret.status || "OPEN"}</td>
                             <td className="px-4 py-4 text-sm text-zinc-400">{formatDate(secret.commitTime)}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
+                </div>
+              )}
+
+              {detailsLoading && (
+                <div className={`${CARD} text-sm text-zinc-400`}>
+                  Loading repository findings...
                 </div>
               )}
 

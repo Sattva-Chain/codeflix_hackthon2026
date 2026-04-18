@@ -77,6 +77,8 @@ export interface OrganizationData {
   _id: string;
   name: string;
   slug: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
   owner?: OrganizationOwner | null;
   members: OrganizationMember[];
   invites: OrganizationInvite[];
@@ -87,6 +89,9 @@ export interface OrganizationData {
     fixed: number;
     ignored: number;
     repos: number;
+    activeMembers?: number;
+    pendingInvites?: number;
+    developers?: number;
   };
 }
 

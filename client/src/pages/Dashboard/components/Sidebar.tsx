@@ -31,7 +31,7 @@ const Sidebar: React.FC = () => {
   }[] = [
     { name: "Dashboard", icon: LayoutDashboard, path: "/Dashboard2", exact: true },
     { name: "Scans", icon: FileSearch, path: "/Dashboard2/scans", exact: true },
-    ...(isSoloDeveloper
+    ...((isSoloDeveloper || isEmployee)
       ? [{ name: "Reports", icon: BarChart2, path: "/Dashboard2/reports", exact: true as const }]
       : []),
     ...((isOrgOwner || isEmployee)
