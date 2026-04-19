@@ -35,18 +35,33 @@ function buildDefaultRecommendation(vulnerability) {
   return `Rotate the exposed ${secretType}, remove it from ${filePath}, and replace it with a secure environment variable or vault reference.`;
 }
 
-function buildTaskDescription({ vulnerability, assignedByName, note, recommendation }) {
+function buildTaskDescription({
+  vulnerability,
+  assignedByName,
+  assignedByEmail,
+  assignedToEmail,
+  organizationName,
+  note,
+  recommendation,
+}) {
   return [
     "Remediation task created from SecureScan.",
     "",
+    organizationName ? `Organization: ${organizationName}` : null,
     `Secret Type: ${vulnerability.secretType || "Secret exposure"}`,
     `Repository: ${vulnerability.repoName || vulnerability.repoUrl || "N/A"}`,
+    vulnerability.repoUrl ? `Repository URL: ${vulnerability.repoUrl}` : null,
     `Branch: ${vulnerability.branch || "N/A"}`,
     `File: ${vulnerability.file || "N/A"}`,
     `Line: ${vulnerability.line ?? "N/A"}`,
     `Found By: ${vulnerability.author || vulnerability.authorEmail || "SecureScan"}`,
+    vulnerability.authorEmail ? `Author Email: ${vulnerability.authorEmail}` : null,
+    vulnerability.commitHash ? `Commit Hash: ${vulnerability.commitHash}` : null,
+    vulnerability.commitTime ? `Commit Time: ${new Date(vulnerability.commitTime).toISOString()}` : null,
+    `Current Vulnerability Status: ${vulnerability.status || "OPEN"}`,
     `Assigned By: ${assignedByName || "SecureScan"}`,
-    `Assignee Email: ${vulnerability.authorEmail || vulnerability.assignedTo || "Not provided"}`,
+    assignedByEmail ? `Assigned By Email: ${assignedByEmail}` : null,
+    `Assignee Email: ${assignedToEmail || vulnerability.authorEmail || vulnerability.assignedTo || "Not provided"}`,
     `Severity: ${vulnerability.severity || "MEDIUM"}`,
     `Internal vulnerability ID: ${vulnerability._id}`,
     "",
@@ -206,6 +221,9 @@ async function createTask(req, res) {
       buildTaskDescription({
         vulnerability,
         assignedByName: req.authUser.name || req.authUser.email,
+        assignedByEmail: req.authUser.email || null,
+        assignedToEmail,
+        organizationName,
         note,
         recommendation,
       });
@@ -268,13 +286,25 @@ async function createTask(req, res) {
         lineNumber: vulnerability.line ?? null,
         secretType: vulnerability.secretType || "Secret",
         severity: vulnerability.severity || "MEDIUM",
+        repoUrl: vulnerability.repoUrl || null,
+        author: vulnerability.author || null,
+        authorEmail: vulnerability.authorEmail || null,
+        commitHash: vulnerability.commitHash || null,
+        commitTime: vulnerability.commitTime || null,
+        vulnerabilityStatus: vulnerability.status || "OPEN",
         dueDateLabel: toDateOnlyInput(dueDate),
         assignedBy: req.authUser.name || req.authUser.email || "SecureScan",
+        assignedByEmail: req.authUser.email || null,
+        adminNote: note || null,
         recommendation,
         asanaTaskUrl: asanaResult.url,
         asanaAssignedLabel: asanaResult.assigneeResolved
           ? asanaResult.assigneeName || asanaResult.assigneeEmail || "Assigned in Asana"
           : null,
+        asanaAssignmentMessage: asanaResult.assignmentMessage || asanaResult.message || null,
+        asanaSyncStatus: asanaResult.syncStatus || null,
+        asanaWorkspaceName: asanaResult.workspaceName || null,
+        asanaProjectName: asanaResult.projectName || null,
         internalReference: String(task._id),
         organizationName,
       });

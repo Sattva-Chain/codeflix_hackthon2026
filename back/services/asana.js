@@ -48,6 +48,80 @@ async function fetchJson(url, options) {
   return { response, payload };
 }
 
+async function getAsanaResource(url) {
+  const { response, payload } = await fetchJson(url, {
+    method: "GET",
+    headers: buildAsanaHeaders(),
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return payload?.data || null;
+}
+
+async function listCurrentUserWorkspaces() {
+  const data = await getAsanaResource(
+    "https://app.asana.com/api/1.0/users/me/workspaces?opt_fields=gid,name,is_organization"
+  );
+
+  return Array.isArray(data) ? data : [];
+}
+
+async function getWorkspaceById(workspaceGid) {
+  if (!workspaceGid) return null;
+  return getAsanaResource(
+    `https://app.asana.com/api/1.0/workspaces/${workspaceGid}?opt_fields=gid,name,is_organization,email_domains`
+  );
+}
+
+async function getProjectById(projectGid) {
+  if (!projectGid) return null;
+  return getAsanaResource(
+    `https://app.asana.com/api/1.0/projects/${projectGid}?opt_fields=gid,name,workspace.gid,workspace.name,team.name`
+  );
+}
+
+async function resolveWorkspaceContext() {
+  const configuredWorkspaceGid = String(process.env.ASANA_WORKSPACE_GID || "").trim();
+  const configuredProjectGid = String(process.env.ASANA_PROJECT_GID || "").trim();
+
+  const configuredWorkspace = await getWorkspaceById(configuredWorkspaceGid);
+  const configuredProject = await getProjectById(configuredProjectGid);
+
+  if (configuredWorkspace) {
+    return {
+      workspace: configuredWorkspace,
+      project: configuredProject,
+      usedWorkspaceFallback: false,
+      usedProjectFallback: !configuredProject && Boolean(configuredProjectGid),
+    };
+  }
+
+  if (configuredProject?.workspace?.gid) {
+    const projectWorkspace = await getWorkspaceById(String(configuredProject.workspace.gid).trim());
+    if (projectWorkspace) {
+      return {
+        workspace: projectWorkspace,
+        project: configuredProject,
+        usedWorkspaceFallback: true,
+        usedProjectFallback: false,
+      };
+    }
+  }
+
+  const workspaces = await listCurrentUserWorkspaces();
+  const fallbackWorkspace = workspaces[0] || null;
+
+  return {
+    workspace: fallbackWorkspace,
+    project: null,
+    usedWorkspaceFallback: Boolean(fallbackWorkspace),
+    usedProjectFallback: Boolean(configuredProjectGid),
+  };
+}
+
 async function listWorkspaceUsers(workspaceGid) {
   const users = [];
   let offset = null;
@@ -88,26 +162,19 @@ async function listWorkspaceUsers(workspaceGid) {
 }
 
 async function getCurrentAsanaUser() {
-  const { response, payload } = await fetchJson(
-    "https://app.asana.com/api/1.0/users/me?opt_fields=gid,name,email",
-    {
-      method: "GET",
-      headers: buildAsanaHeaders(),
-    }
+  const data = await getAsanaResource(
+    "https://app.asana.com/api/1.0/users/me?opt_fields=gid,name,email"
   );
-
-  if (!response.ok) return null;
-  return payload?.data || null;
+  return data || null;
 }
 
-async function resolveAsanaAssignee(email) {
+async function resolveAsanaAssignee(email, workspaceGid) {
   const normalizedEmail = String(email || "").trim().toLowerCase();
-  if (!normalizedEmail || !isAsanaConfigured()) {
+  if (!normalizedEmail || !isAsanaConfigured() || !workspaceGid) {
     return null;
   }
 
   try {
-    const workspaceGid = String(process.env.ASANA_WORKSPACE_GID || "").trim();
     const users = await listWorkspaceUsers(workspaceGid);
     let match = users.find(
       (user) => String(user?.email || "").trim().toLowerCase() === normalizedEmail
@@ -145,11 +212,25 @@ async function createAsanaRemediationTask(payload) {
     };
   }
 
-  const workspaceGid = String(process.env.ASANA_WORKSPACE_GID || "").trim();
-  const projectGid = String(process.env.ASANA_PROJECT_GID || "").trim();
+  const workspaceContext = await resolveWorkspaceContext();
+  const workspaceGid = String(workspaceContext.workspace?.gid || "").trim();
+  const projectGid = String(workspaceContext.project?.gid || "").trim();
+
+  if (!workspaceGid) {
+    return {
+      created: false,
+      skipped: false,
+      syncStatus: "FAILED",
+      message:
+        "No accessible Asana workspace was found for the configured token. Update ASANA_WORKSPACE_GID or use a token from the correct Asana workspace.",
+      gid: null,
+      url: null,
+    };
+  }
+
   const assignee = payload.assigneeGid
     ? { gid: payload.assigneeGid, email: payload.assigneeEmail || null, name: null }
-    : await resolveAsanaAssignee(payload.assigneeEmail);
+    : await resolveAsanaAssignee(payload.assigneeEmail, workspaceGid);
   const assigneeGid = assignee?.gid || null;
   const dueOn = formatAsanaDate(payload.dueDate || computeDefaultTaskDueDate());
 
@@ -158,21 +239,27 @@ async function createAsanaRemediationTask(payload) {
       name: payload.name,
       notes: payload.notes,
       workspace: workspaceGid,
-      projects: [projectGid],
       due_on: dueOn,
     },
   };
+
+  if (projectGid) {
+    requestBody.data.projects = [projectGid];
+  }
 
   if (assigneeGid) {
     requestBody.data.assignee = assigneeGid;
   }
 
   try {
-    const { response, payload: body } = await fetchJson("https://app.asana.com/api/1.0/tasks", {
+    const { response, payload: body } = await fetchJson(
+      "https://app.asana.com/api/1.0/tasks?opt_fields=gid,permalink_url,name",
+      {
       method: "POST",
       headers: buildAsanaHeaders(),
       body: JSON.stringify(requestBody),
-    });
+      }
+    );
 
     if (!response.ok) {
       const message =
@@ -194,15 +281,19 @@ async function createAsanaRemediationTask(payload) {
     }
 
     const task = body?.data || {};
+    const projectWarning = workspaceContext.usedProjectFallback
+      ? "Configured Asana project ID was not valid, so the task was created in the workspace without attaching it to the configured project."
+      : null;
+
     return {
       created: true,
       skipped: false,
       syncStatus: "SYNCED",
-      message: "Task created in Asana.",
+      message: projectWarning || "Task created in Asana.",
       gid: task.gid || null,
       url:
         task.permalink_url ||
-        (task.gid ? `https://app.asana.com/0/${projectGid}/${task.gid}` : null),
+        (task.gid ? `https://app.asana.com/0/${projectGid || workspaceGid}/${task.gid}` : null),
       assigneeGid,
       assigneeResolved: Boolean(assigneeGid),
       assigneeEmail: assignee?.email || payload.assigneeEmail || null,
@@ -212,6 +303,9 @@ async function createAsanaRemediationTask(payload) {
         : payload.assigneeEmail
           ? `Task created in Asana, but ${payload.assigneeEmail} is not available as an assignable member in the configured Asana workspace or project.`
           : "Task created in Asana without an assignee.",
+      workspaceName: workspaceContext.workspace?.name || null,
+      projectName: workspaceContext.project?.name || null,
+      configurationWarning: projectWarning,
     };
   } catch (error) {
     return {
